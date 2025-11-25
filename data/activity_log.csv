@@ -1,0 +1,58 @@
+"2025-11-20 11:08:40",admin,"Pipeline Access","User accessed the production pipeline page",::1
+"2025-11-20 12:04:07",pdteam@alphasonix.com,"Folder Creation","Created folder: jobsheets/27_PRODUCTION_STATUS_LIST",192.168.1.6
+"2025-11-20 12:04:37",pdteam@alphasonix.com,"File Upload","Uploaded file: PRODUCTION STATUS LIST.docx to folder: jobsheets/27_PRODUCTION_STATUS_LIST",192.168.1.6
+"2025-11-20 12:05:28",pdteam@alphasonix.com,"File Deletion","Deleted file: jobsheets/27_PRODUCTION_STATUS_LIST/2025-11-20_120437_PRODUCTION_STATUS_LIST.docx",192.168.1.6
+"2025-11-20 12:08:10",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 12:08:38",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 12:08:46",pdteam@alphasonix.com,"Pipeline Search","Search: ""m"" | Status: """" | Client: """"",192.168.1.6
+"2025-11-20 12:08:47",pdteam@alphasonix.com,"Pipeline Search","Search: ""mt"" | Status: """" | Client: """"",192.168.1.6
+"2025-11-20 12:08:48",pdteam@alphasonix.com,"Pipeline Search","Search: ""mtq"" | Status: """" | Client: """"",192.168.1.6
+"2025-11-20 12:29:47",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 12:29:59",pdteam@alphasonix.com,"Pipeline Search","Search: ""m"" | Status: """" | Client: """"",192.168.1.6
+"2025-11-20 12:30:00",pdteam@alphasonix.com,"Pipeline Search","Search: ""mt"" | Status: """" | Client: """"",192.168.1.6
+"2025-11-20 12:30:00",pdteam@alphasonix.com,"Pipeline Search","Search: ""mtq"" | Status: """" | Client: """"",192.168.1.6
+"2025-11-20 12:30:37",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 13:14:23",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 13:30:21",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 13:30:40",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 13:30:46",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 13:30:46",pdteam@alphasonix.com,"Pipeline: Order Management","Order #1001 - Order Management: User 'pdteam@alphasonix.com' (employee) deleted order #1001 [User: pdteam@alphasonix.com (employee)]",192.168.1.6
+"2025-11-20 13:30:46",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 13:32:50",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 13:33:01",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 13:33:07",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 13:33:07",pdteam@alphasonix.com,"Pipeline: Order Management","Order #1001 - Order Management: User 'pdteam@alphasonix.com' (employee) deleted order #1001 [User: pdteam@alphasonix.com (employee)]",192.168.1.6
+"2025-11-20 13:33:07",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 13:58:07",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:02:48",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:02:48",pdteam@alphasonix.com,"Pipeline: Raw Materials","Order #1001 - Raw Materials: User 'pdteam@alphasonix.com' (employee) added raw material: Pipe - AISI 4130 (Item #1) [User: pdteam@alphasonix.com (employee)]",192.168.1.6
+"2025-11-20 14:02:48",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:04:37",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:04:37",pdteam@alphasonix.com,"Pipeline: Machining Process","Order #1001 - Machining Process: User 'pdteam@alphasonix.com' (employee) added process: Turning (Seq: 1) (Item #1) [User: pdteam@alphasonix.com (employee)]",192.168.1.6
+"2025-11-20 14:04:37",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:05:55",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:05:55",pdteam@alphasonix.com,"Pipeline: Machining Process","Order #1001 - Machining Process: User 'pdteam@alphasonix.com' (employee) updated process status to: Completed (Item #1) [User: pdteam@alphasonix.com (employee)]",192.168.1.6
+"2025-11-20 14:05:55",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:07:01",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:07:01",pdteam@alphasonix.com,"Pipeline: Machining Process","Order #1001 - Machining Process: User 'pdteam@alphasonix.com' (employee) added process: Welding (Seq: 2) (Item #1) [User: pdteam@alphasonix.com (employee)]",192.168.1.6
+"2025-11-20 14:07:01",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:07:37",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:07:37",pdteam@alphasonix.com,"Pipeline: Machining Process","Order #1001 - Machining Process: User 'pdteam@alphasonix.com' (employee) updated process status to: Completed (Item #1) [User: pdteam@alphasonix.com (employee)]",192.168.1.6
+"2025-11-20 14:07:37",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:07:47",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:07:47",pdteam@alphasonix.com,"Pipeline: Item Status Update","Order #1001 - Item Status Update: User 'pdteam@alphasonix.com' (employee) changed ITEM STATUS for '1' from 'Ready for QC' to 'QC Completed' (Item #1) [User: pdteam@alphasonix.com (employee)]",192.168.1.6
+"2025-11-20 14:07:47",pdteam@alphasonix.com,"Item Status Change","Order #1001 - Item '1' status changed from 'Ready for QC' to 'QC Completed'",192.168.1.6
+"2025-11-20 14:07:47",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:08:16",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:08:16",pdteam@alphasonix.com,"Pipeline: Item Status Update","Order #1001 - Item Status Update: User 'pdteam@alphasonix.com' (employee) changed ITEM STATUS for '1' from 'QC Completed' to 'Ready for QC' (Item #1) [User: pdteam@alphasonix.com (employee)]",192.168.1.6
+"2025-11-20 14:08:16",pdteam@alphasonix.com,"Item Status Change","Order #1001 - Item '1' status changed from 'QC Completed' to 'Ready for QC'",192.168.1.6
+"2025-11-20 14:08:16",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:09:31",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 14:09:31",pdteam@alphasonix.com,"Pipeline: Quality Inspection","Order #1001 - Quality Inspection: User 'pdteam@alphasonix.com' (employee) submitted QC Result: QC Passed - UT (Item #1) [User: pdteam@alphasonix.com (employee)]",192.168.1.6
+"2025-11-20 14:09:31",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-20 15:03:34",pdteam@alphasonix.com,"Pipeline Access","User accessed the production pipeline page",192.168.1.6
+"2025-11-21 12:47:06",System,"Pipeline Access","User accessed the production pipeline page",::1
+"2025-11-21 13:01:48",System,"Pipeline Access","User accessed the production pipeline page",::1
+"2025-11-21 13:01:58",System,"Pipeline Access","User accessed the production pipeline page",::1
+"2025-11-21 13:02:00",System,"Pipeline Access","User accessed the production pipeline page",::1
+"2025-11-21 13:02:04",System,"Pipeline Access","User accessed the production pipeline page",::1

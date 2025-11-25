@@ -1,0 +1,13 @@
+1001,"2025-11-20 13:30:40",pdteam@alphasonix.com,"Order Creation","New order created with 1 items",
+1001,"2025-11-20 13:30:46",pdteam@alphasonix.com,27,employee,"Order Management","User 'pdteam@alphasonix.com' (employee) deleted order #1001",
+1001,"2025-11-20 13:32:50",pdteam@alphasonix.com,"Order Creation","New order created with 5 items",
+1001,"2025-11-20 13:33:07",pdteam@alphasonix.com,27,employee,"Order Management","User 'pdteam@alphasonix.com' (employee) deleted order #1001",
+1001,"2025-11-20 13:58:07",pdteam@alphasonix.com,"Order Creation","New order created with 14 items",
+1001,"2025-11-20 14:02:48",pdteam@alphasonix.com,27,employee,"Raw Materials","User 'pdteam@alphasonix.com' (employee) added raw material: Pipe - AISI 4130",0
+1001,"2025-11-20 14:04:37",pdteam@alphasonix.com,27,employee,"Machining Process","User 'pdteam@alphasonix.com' (employee) added process: Turning (Seq: 1)",0
+1001,"2025-11-20 14:05:55",pdteam@alphasonix.com,27,employee,"Machining Process","User 'pdteam@alphasonix.com' (employee) updated process status to: Completed",0
+1001,"2025-11-20 14:07:01",pdteam@alphasonix.com,27,employee,"Machining Process","User 'pdteam@alphasonix.com' (employee) added process: Welding (Seq: 2)",0
+1001,"2025-11-20 14:07:37",pdteam@alphasonix.com,27,employee,"Machining Process","User 'pdteam@alphasonix.com' (employee) updated process status to: Completed",0
+1001,"2025-11-20 14:07:47",pdteam@alphasonix.com,27,employee,"Item Status Update","User 'pdteam@alphasonix.com' (employee) changed ITEM STATUS for '1' from 'Ready for QC' to 'QC Completed'",0
+1001,"2025-11-20 14:08:16",pdteam@alphasonix.com,27,employee,"Item Status Update","User 'pdteam@alphasonix.com' (employee) changed ITEM STATUS for '1' from 'QC Completed' to 'Ready for QC'",0
+1001,"2025-11-20 14:09:31",pdteam@alphasonix.com,27,employee,"Quality Inspection","User 'pdteam@alphasonix.com' (employee) submitted QC Result: QC Passed - UT",0
