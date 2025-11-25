@@ -35,6 +35,7 @@ $items = getOrderItems($orderId);
 ?>
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -195,10 +196,25 @@ $items = getOrderItems($orderId);
             margin-left: 5px;
         }
 
-        .status-completed { background: #d4edda; color: #155724; }
-        .status-on-hold { background: #f8d7da; color: #721c24; }
-        .status-in-progress { background: #cce5ff; color: #004085; }
-        .status-not-started { background: #e2e3e5; color: #383d41; }
+        .status-completed {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-on-hold {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status-in-progress {
+            background: #cce5ff;
+            color: #004085;
+        }
+
+        .status-not-started {
+            background: #e2e3e5;
+            color: #383d41;
+        }
 
         .process-detail {
             margin-bottom: 2px;
@@ -225,7 +241,13 @@ $items = getOrderItems($orderId);
             align-items: center;
         }
 
-        .inspection-passed { background: #d4edda; color: #155724; padding: 1px 6px; border-radius: 3px; font-size: 9px; }
+        .inspection-passed {
+            background: #d4edda;
+            color: #155724;
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 9px;
+        }
 
         .inspection-summary {
             background: #e3f2fd;
@@ -298,11 +320,11 @@ $items = getOrderItems($orderId);
             body {
                 margin: 10mm;
             }
-            
+
             .no-print {
                 display: none !important;
             }
-            
+
             .page-break {
                 page-break-before: always;
             }
@@ -316,18 +338,18 @@ $items = getOrderItems($orderId);
                 padding: 20px;
                 background: #f5f5f5;
             }
-            
+
             .print-container {
                 background: white;
                 padding: 20mm;
-                box-shadow: 0 0 20px rgba(0,0,0,0.1);
+                box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
             }
-            
+
             .print-actions {
                 text-align: center;
                 margin-bottom: 20px;
             }
-            
+
             .btn {
                 padding: 8px 16px;
                 margin: 0 5px;
@@ -339,20 +361,20 @@ $items = getOrderItems($orderId);
                 text-decoration: none;
                 display: inline-block;
             }
-            
+
             .btn-secondary {
                 background: #6c757d;
             }
         }
-        @media print {
-    .no-print {
-        display: none !important;
-    }
-}
 
-        
+        @media print {
+            .no-print {
+                display: none !important;
+            }
+        }
     </style>
 </head>
+
 <body>
     <!-- Print Actions (Visible only on screen) -->
     <div class="print-actions no-print">
@@ -363,9 +385,9 @@ $items = getOrderItems($orderId);
 
     <!-- Print Content -->
     <div class="print-container">
-     <div class="page-header no-print">localhost/alpha/alpha/pipeline.php</div>
+        <div class="page-header no-print">localhost/alpha/alpha/pipeline.php</div>
 
-        
+
         <h1 class="order-header"># Order Information</h1>
         <div style="margin-bottom: 5px;">
             <strong>Order #:</strong> <?= htmlspecialchars($currentOrder['order_id']) ?> &nbsp;&nbsp;&nbsp;
@@ -408,13 +430,13 @@ $items = getOrderItems($orderId);
                     ▶ <?= htmlspecialchars($item['Name'] ?? 'Unnamed Item') ?>
                     <span class="item-qty">Qty: <?= htmlspecialchars($item['quantity'] ?? '1') ?></span>
                 </div>
-                
+
                 <?php if (!empty($item['Dimensions'])): ?>
                     <div class="item-details">
                         <strong>Dimensions:</strong> <?= htmlspecialchars($item['Dimensions']) ?>
                     </div>
                 <?php endif; ?>
-                
+
                 <?php if (!empty($item['Description'])): ?>
                     <div class="item-details">
                         <strong>Description:</strong> <?= htmlspecialchars($item['Description']) ?>
@@ -503,7 +525,7 @@ $items = getOrderItems($orderId);
                             <div class="inspection-entry">
                                 <div class="inspection-header">
                                     <span><strong>Inspection #<?= ($inspIndex + 1) ?>: <?= htmlspecialchars($inspection['type']) ?></strong>
-                                    <span class="inspection-passed"><?= htmlspecialchars($inspection['status']) ?></span></span>
+                                        <span class="inspection-passed"><?= htmlspecialchars($inspection['status']) ?></span></span>
                                     <span style="font-size: 9px; color: #666;"><?= date('M j, Y', strtotime($inspection['inspection_date'])) ?></span>
                                 </div>
                                 <div class="process-detail"><strong>Technician:</strong> <?= htmlspecialchars($inspection['technician_name']) ?></div>
@@ -522,7 +544,7 @@ $items = getOrderItems($orderId);
                                 <?php endif; ?>
                             </div>
                         <?php endforeach; ?>
-                        
+
                         <!-- Inspection Summary -->
                         <div class="inspection-summary">
                             <div class="summary-title">📊 Inspection Summary</div>
@@ -560,16 +582,16 @@ $items = getOrderItems($orderId);
                                     <div><strong>Gross Weight:</strong> <?= htmlspecialchars($lot['gross_weight']) ?> kg</div>
                                     <div><strong>Docs Included:</strong> <?= htmlspecialchars($lot['docs_included']) ?></div>
                                 </div>
-                                
+
                                 <?php if (!empty($lot['fumigation_completed']) && $lot['fumigation_completed'] === 'Yes'): ?>
                                     <div class="fumigation-box">
                                         <strong>✅ Fumigation Details:</strong><br>
-                                        Certificate #<?= htmlspecialchars($lot['fumigation_certificate_number']) ?> | 
-                                        Date: <?= htmlspecialchars($lot['fumigation_date']) ?> | 
+                                        Certificate #<?= htmlspecialchars($lot['fumigation_certificate_number']) ?> |
+                                        Date: <?= htmlspecialchars($lot['fumigation_date']) ?> |
                                         Agency: <?= htmlspecialchars($lot['fumigation_agency']) ?>
                                     </div>
                                 <?php endif; ?>
-                                
+
                                 <?php if (!empty($lot['photos'])): ?>
                                     <div style="margin-top: 5px;">
                                         <strong>Product Photos:</strong><br>
@@ -578,7 +600,7 @@ $items = getOrderItems($orderId);
                                         <?php endforeach; ?>
                                     </div>
                                 <?php endif; ?>
-                                
+
                                 <!-- Stage 6: Shipping Documentation -->
                                 <?php if (!empty($lot['shipping_documents'])): ?>
                                     <div class="shipping-section">
@@ -592,7 +614,7 @@ $items = getOrderItems($orderId);
                                         </div>
                                     </div>
                                 <?php endif; ?>
-                                
+
                                 <!-- Stage 7: Dispatch -->
                                 <?php if (!empty($lot['dispatch_status']) && $lot['dispatch_status'] === 'Shipped'): ?>
                                     <div class="dispatch-section">
@@ -615,7 +637,7 @@ $items = getOrderItems($orderId);
                 <?php endif; ?>
             </div>
         <?php endforeach; ?>
-        
+
         <div class="page-footer">
             Page 1 of 1 • <?= date('m/d/y, g:i A') ?> • Alphasonix CRM
         </div>
@@ -630,4 +652,5 @@ $items = getOrderItems($orderId);
         };
     </script>
 </body>
+
 </html>
