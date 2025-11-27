@@ -1238,5 +1238,4 @@ function createBackup() {
     // For now, just create a ZIP backup of data files
     return downloadAllDataAsZip();
 }
-
 ?>

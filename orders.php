@@ -322,9 +322,13 @@ $customerMap = array_column($customers, 'name', 'id');
             border-bottom: 1px solid var(--border-color);
         }
         
+        .recent-order-item:last-child {
+            border-bottom: none;
+        }
+        
         .order-avatar {
-            width: 32px;
-            height: 32px;
+            width: 40px;
+            height: 40px;
             border-radius: 50%;
             background: var(--primary);
             color: white;
@@ -333,6 +337,27 @@ $customerMap = array_column($customers, 'name', 'id');
             justify-content: center;
             font-weight: 600;
             margin-right: 0.75rem;
+            font-size: 1.2rem;
+        }
+        
+        .order-info {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .order-info strong {
+            font-size: 0.875rem;
+            color: var(--dark);
+        }
+        
+        .order-info span {
+            font-size: 0.75rem;
+            color: var(--gray);
+        }
+        
+        .order-status {
+            margin-left: auto;
         }
         
         .quick-actions-grid {
@@ -358,6 +383,113 @@ $customerMap = array_column($customers, 'name', 'id');
             color: white;
             text-decoration: none;
             transform: translateY(-2px);
+        }
+        
+        .action-icon {
+            font-size: 1.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        /* Dimension Selection Styles */
+        .dimension-type-selector {
+            margin-bottom: 1rem;
+        }
+        
+        .dimension-inputs {
+            display: none;
+        }
+        
+        .dimension-inputs.active {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+            gap: 0.5rem;
+        }
+        
+        .dimension-input-group {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .dimension-input-group label {
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--gray);
+            margin-bottom: 0.25rem;
+        }
+        
+        .dimension-result {
+            margin-top: 0.5rem;
+            padding: 0.5rem;
+            background: var(--light);
+            border-radius: 0.375rem;
+            font-family: monospace;
+            font-size: 0.875rem;
+            color: var(--dark);
+            border: 1px solid var(--border-color);
+        }
+        
+        .dimension-result:empty {
+            display: none;
+        }
+        
+        .file-preview-container {
+            margin-top: 0.5rem;
+            padding: 0.5rem;
+            background: var(--light);
+            border-radius: 0.375rem;
+        }
+        
+        .selected-file-info {
+            display: flex;
+            align-items: center;
+        }
+        
+        .file-icon {
+            margin-right: 0.5rem;
+            font-size: 1.5rem;
+        }
+        
+        .file-details {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .file-name {
+            font-weight: 500;
+            color: var(--dark);
+        }
+        
+        .file-size {
+            color: var(--gray);
+            font-size: 0.875rem;
+        }
+        
+        .file-upload-content {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .file-upload-content i {
+            font-size: 2rem;
+            color: var(--gray);
+        }
+        
+        .file-upload-text {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        
+        .file-upload-title {
+            font-weight: 500;
+            color: var(--dark);
+        }
+        
+        .file-upload-subtitle {
+            font-size: 0.875rem;
+            color: var(--gray);
         }
     </style>
 </head>
@@ -650,92 +782,93 @@ $customerMap = array_column($customers, 'name', 'id');
 
         daysRemainingElement.className = `timeline-display ${timelineClass}`;
     }
-document.getElementById('addManualProductBtn').addEventListener('click', function () {
-    const container = document.getElementById('manualProductsContainer');
-    const firstEntry = container.querySelector('.product-entry');
-    if (!firstEntry) return;
-    
-    // Count existing entries to create sequential numbering
-    const existingEntries = container.querySelectorAll('.product-entry').length;
-    const newEntryNumber = existingEntries + 1;
-    
-    const newEntry = firstEntry.cloneNode(true);
-    
-    // Update title with numbering
-    const titleBadge = newEntry.querySelector('.product-type-badge');
-    titleBadge.innerHTML = `<i class="bi bi-pencil"></i> Custom Item #${newEntryNumber}`;
 
-    // Generate a unique ID for the file input
-    const newId = `file_manual_${Date.now()}`;
-    newEntry.querySelector('input[type="file"]').id = newId;
-    newEntry.querySelector('label.file-upload-label').setAttribute('for', newId);
-
-    // Clear the new entry
-    newEntry.querySelector('input[name^="manual_product_name"]').value = '';
-    newEntry.querySelector('input[name^="manual_product_dimensions"]').value = '';
-    newEntry.querySelector('textarea').value = '';
-    newEntry.querySelector('input[type="file"]').value = null;
-    newEntry.querySelector('.file-preview-container').style.display = 'none';
-
-    container.appendChild(newEntry);
-    
-    // Update numbering for all entries to ensure they're sequential
-    updateManualProductNumbering();
-});
-
-// Function to update numbering of all manual product entries
-function updateManualProductNumbering() {
-    const container = document.getElementById('manualProductsContainer');
-    const entries = container.querySelectorAll('.product-entry');
-    
-    entries.forEach((entry, index) => {
-        const titleBadge = entry.querySelector('.product-type-badge');
-        titleBadge.innerHTML = `<i class="bi bi-pencil"></i> Custom Item #${index + 1}`;
-    });
-}
-
-// Also update the removeProduct function to maintain correct numbering
-function removeProduct(button) {
-    const entry = button.closest('.product-entry');
-    const container = entry.parentElement;
-    const isManualContainer = container.id === 'manualProductsContainer';
-
-    if (container.querySelectorAll('.product-entry').length > 1) {
-        entry.remove();
-        // Update numbering if this is a manual product
-        if (isManualContainer) {
-            updateManualProductNumbering();
-        }
-    } else {
-        // If it's the last one, just clear it
-        const inputs = entry.querySelectorAll('input, select, textarea');
-        inputs.forEach(input => {
-            if (input.type === 'file') {
-                input.value = null;
-            } else if (input.tagName === 'SELECT') {
-                input.selectedIndex = 0;
-            } else {
-                input.value = '';
-            }
-        });
-        entry.querySelector('.file-preview-container').style.display = 'none';
+    function handleDimensionTypeChange(selectElement) {
+        const entry = selectElement.closest('.product-entry');
+        const dimensionInputsContainers = entry.querySelectorAll('.dimension-inputs');
+        const selectedType = selectElement.value;
+        const dimensionResult = entry.querySelector('.dimension-result');
         
-        // Reset numbering if it's a manual product
-        if (isManualContainer) {
-            const titleBadge = entry.querySelector('.product-type-badge');
-            titleBadge.innerHTML = '<i class="bi bi-pencil"></i> Custom Item #1';
+        // Hide all dimension input containers
+        dimensionInputsContainers.forEach(container => {
+            container.classList.remove('active');
+        });
+        
+        // Show the selected type's inputs
+        if (selectedType) {
+            const activeContainer = entry.querySelector(`.dimension-inputs[data-type="${selectedType}"]`);
+            if (activeContainer) {
+                activeContainer.classList.add('active');
+            }
+        }
+        
+        // Clear dimension result
+        dimensionResult.textContent = '';
+        
+        // Clear the hidden dimension input
+        const hiddenDimensionInput = entry.querySelector('.product-dimensions-hidden');
+        if (hiddenDimensionInput) {
+            hiddenDimensionInput.value = '';
         }
     }
-}
+
+    function updateDimensionString(entry) {
+        const selectedType = entry.querySelector('.dimension-type-select').value;
+        const dimensionResult = entry.querySelector('.dimension-result');
+        const hiddenDimensionInput = entry.querySelector('.product-dimensions-hidden');
+        
+        if (!selectedType) {
+            dimensionResult.textContent = '';
+            hiddenDimensionInput.value = '';
+            return;
+        }
+        
+        let dimensionString = '';
+        const activeContainer = entry.querySelector(`.dimension-inputs[data-type="${selectedType}"].active`);
+        
+        if (activeContainer) {
+            const inputs = activeContainer.querySelectorAll('input[type="number"]');
+            const values = Array.from(inputs).map(input => input.value || '0');
+            
+            switch(selectedType) {
+                case 'plate':
+                    if (values[0] && values[1] && values[2]) {
+                        dimensionString = `${values[0]} × ${values[1]} × ${values[2]}`;
+                    }
+                    break;
+                case 'pipe':
+                    if (values[0] && values[1] && values[2] && values[3]) {
+                        dimensionString = `L: ${values[0]} × OD: ${values[1]} × ID: ${values[2]} × T: ${values[3]}`;
+                    }
+                    break;
+                case 't-joint':
+                    if (values[0] && values[1] && values[2] && values[3]) {
+                        dimensionString = `${values[0]} × ${values[1]} × ${values[2]} × ${values[3]}`;
+                    }
+                    break;
+                case 'custom':
+                    const customInput = activeContainer.querySelector('input[type="text"]');
+                    dimensionString = customInput.value;
+                    break;
+            }
+        }
+        
+        dimensionResult.textContent = dimensionString || 'Please fill in all dimensions';
+        hiddenDimensionInput.value = dimensionString;
+    }
 
     function updateDimensions(selectElement) {
         const selectedOption = selectElement.options[selectElement.selectedIndex];
-        const dimensionsInput = selectElement.closest('.product-entry').querySelector('.product-dimensions');
-
+        const entry = selectElement.closest('.product-entry');
+        const dimensionTypeSelect = entry.querySelector('.dimension-type-select');
+        
         if (selectedOption && selectedOption.value) {
-            dimensionsInput.value = selectedOption.getAttribute('data-dimensions') || '';
-        } else {
-            dimensionsInput.value = '';
+            // You can set a default dimension type based on the product if needed
+            // For now, just reset the dimension selector
+            if (dimensionTypeSelect) {
+                dimensionTypeSelect.value = '';
+                handleDimensionTypeChange(dimensionTypeSelect);
+            }
         }
     }
 
@@ -778,7 +911,13 @@ function removeProduct(button) {
 
         // Clear the new entry
         newEntry.querySelector('select').selectedIndex = 0;
-        newEntry.querySelector('.product-dimensions').value = '';
+        newEntry.querySelector('.dimension-type-select').selectedIndex = 0;
+        newEntry.querySelectorAll('.dimension-inputs').forEach(container => {
+            container.classList.remove('active');
+            container.querySelectorAll('input').forEach(input => input.value = '');
+        });
+        newEntry.querySelector('.dimension-result').textContent = '';
+        newEntry.querySelector('.product-dimensions-hidden').value = '';
         newEntry.querySelector('textarea').value = '';
         newEntry.querySelector('input[type="file"]').value = null;
         newEntry.querySelector('.file-preview-container').style.display = 'none';
@@ -790,28 +929,63 @@ function removeProduct(button) {
         const container = document.getElementById('manualProductsContainer');
         const firstEntry = container.querySelector('.product-entry');
         if (!firstEntry) return;
+        
+        // Count existing entries to create sequential numbering
+        const existingEntries = container.querySelectorAll('.product-entry').length;
+        const newEntryNumber = existingEntries + 1;
+        
         const newEntry = firstEntry.cloneNode(true);
+        
+        // Update title with numbering
+        const titleBadge = newEntry.querySelector('.product-type-badge');
+        titleBadge.innerHTML = `<i class="bi bi-pencil"></i> Custom Item #${newEntryNumber}`;
 
+        // Generate a unique ID for the file input
         const newId = `file_manual_${Date.now()}`;
         newEntry.querySelector('input[type="file"]').id = newId;
         newEntry.querySelector('label.file-upload-label').setAttribute('for', newId);
 
         // Clear the new entry
         newEntry.querySelector('input[name^="manual_product_name"]').value = '';
-        newEntry.querySelector('input[name^="manual_product_dimensions"]').value = '';
+        newEntry.querySelector('.dimension-type-select').selectedIndex = 0;
+        newEntry.querySelectorAll('.dimension-inputs').forEach(container => {
+            container.classList.remove('active');
+            container.querySelectorAll('input').forEach(input => input.value = '');
+        });
+        newEntry.querySelector('.dimension-result').textContent = '';
+        newEntry.querySelector('.product-dimensions-hidden').value = '';
         newEntry.querySelector('textarea').value = '';
         newEntry.querySelector('input[type="file"]').value = null;
         newEntry.querySelector('.file-preview-container').style.display = 'none';
 
         container.appendChild(newEntry);
+        
+        // Update numbering for all entries to ensure they're sequential
+        updateManualProductNumbering();
     });
+
+    // Function to update numbering of all manual product entries
+    function updateManualProductNumbering() {
+        const container = document.getElementById('manualProductsContainer');
+        const entries = container.querySelectorAll('.product-entry');
+        
+        entries.forEach((entry, index) => {
+            const titleBadge = entry.querySelector('.product-type-badge');
+            titleBadge.innerHTML = `<i class="bi bi-pencil"></i> Custom Item #${index + 1}`;
+        });
+    }
 
     function removeProduct(button) {
         const entry = button.closest('.product-entry');
         const container = entry.parentElement;
+        const isManualContainer = container.id === 'manualProductsContainer';
 
         if (container.querySelectorAll('.product-entry').length > 1) {
             entry.remove();
+            // Update numbering if this is a manual product
+            if (isManualContainer) {
+                updateManualProductNumbering();
+            }
         } else {
             // If it's the last one, just clear it
             const inputs = entry.querySelectorAll('input, select, textarea');
@@ -824,7 +998,26 @@ function removeProduct(button) {
                     input.value = '';
                 }
             });
+            
+            // Hide dimension inputs
+            const dimensionInputs = entry.querySelectorAll('.dimension-inputs');
+            dimensionInputs.forEach(container => {
+                container.classList.remove('active');
+            });
+            
+            // Clear dimension result
+            const dimensionResult = entry.querySelector('.dimension-result');
+            if (dimensionResult) {
+                dimensionResult.textContent = '';
+            }
+            
             entry.querySelector('.file-preview-container').style.display = 'none';
+            
+            // Reset numbering if it's a manual product
+            if (isManualContainer) {
+                const titleBadge = entry.querySelector('.product-type-badge');
+                titleBadge.innerHTML = '<i class="bi bi-pencil"></i> Custom Item #1';
+            }
         }
     }
 
@@ -858,6 +1051,7 @@ function renderProductEntry($type, $products = null) {
     $prefix = $isExisting ? '' : 'manual_';
     $class = $isExisting ? 'existing-product-entry' : 'manual-product-entry';
     $uniqueFileId = 'file_' . $type . '_' . uniqid();
+    $uniqueDimensionId = 'dim_' . $type . '_' . uniqid();
 
     ob_start();
     ?>
@@ -865,7 +1059,7 @@ function renderProductEntry($type, $products = null) {
         <div class="product-entry-header">
             <div class="product-type-badge">
                 <i class="bi <?= $isExisting ? 'bi-box' : 'bi-pencil' ?>"></i>
-                <?= $isExisting ? 'Catalog Item' : 'Custom Item' ?>
+                <?= $isExisting ? 'Catalog Item' : 'Custom Item #1' ?>
             </div>
             <button type="button" class="btn btn-danger btn-sm remove-product-btn" onclick="removeProduct(this)">
                 <i class="bi bi-x"></i>
@@ -897,10 +1091,99 @@ function renderProductEntry($type, $products = null) {
                 <input type="number" name="<?= $prefix ?>quantity[]" min="1" value="1" placeholder="Qty" class="form-control">
             </div>
             
-            <div class="form-group">
-                <label class="form-label">Dimensions</label>
-                <input type="text" name="<?= $prefix ?>product_dimensions[]" placeholder="Dimensions"
-                    class="form-control <?= $isExisting ? 'product-dimensions' : '' ?>">
+            <div class="form-group full-width">
+                <label class="form-label">Dimension Type</label>
+                <select class="form-select dimension-type-select" onchange="handleDimensionTypeChange(this)">
+                    <option value="">-- Select Dimension Type --</option>
+                    <option value="plate">Plate (L × W × T)</option>
+                    <option value="pipe">Pipe (L × OD × ID × T)</option>
+                    <option value="t-joint">T-Joint (L × W × T × H)</option>
+                    <option value="custom">Block/Custom</option>
+                </select>
+            </div>
+            
+            <!-- Plate Dimensions -->
+            <div class="form-group full-width dimension-inputs" data-type="plate">
+                <div class="dimension-input-group">
+                    <label>Length (L)</label>
+                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
+                           onchange="updateDimensionString(this.closest('.product-entry'))">
+                </div>
+                <div class="dimension-input-group">
+                    <label>Width (W)</label>
+                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
+                           onchange="updateDimensionString(this.closest('.product-entry'))">
+                </div>
+                <div class="dimension-input-group">
+                    <label>Thickness (T)</label>
+                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
+                           onchange="updateDimensionString(this.closest('.product-entry'))">
+                </div>
+            </div>
+            
+            <!-- Pipe Dimensions -->
+            <div class="form-group full-width dimension-inputs" data-type="pipe">
+                <div class="dimension-input-group">
+                    <label>Length (L)</label>
+                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
+                           onchange="updateDimensionString(this.closest('.product-entry'))">
+                </div>
+                <div class="dimension-input-group">
+                    <label>Outer Dia (OD)</label>
+                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
+                           onchange="updateDimensionString(this.closest('.product-entry'))">
+                </div>
+                <div class="dimension-input-group">
+                    <label>Inner Dia (ID)</label>
+                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
+                           onchange="updateDimensionString(this.closest('.product-entry'))">
+                </div>
+                <div class="dimension-input-group">
+                    <label>Thickness (T)</label>
+                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
+                           onchange="updateDimensionString(this.closest('.product-entry'))">
+                </div>
+            </div>
+            
+            <!-- T-Joint Dimensions -->
+            <div class="form-group full-width dimension-inputs" data-type="t-joint">
+                <div class="dimension-input-group">
+                    <label>Length (L)</label>
+                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
+                           onchange="updateDimensionString(this.closest('.product-entry'))">
+                </div>
+                <div class="dimension-input-group">
+                    <label>Width (W)</label>
+                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
+                           onchange="updateDimensionString(this.closest('.product-entry'))">
+                </div>
+                <div class="dimension-input-group">
+                    <label>Thickness (T)</label>
+                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
+                           onchange="updateDimensionString(this.closest('.product-entry'))">
+                </div>
+                <div class="dimension-input-group">
+                    <label>Height (H)</label>
+                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
+                           onchange="updateDimensionString(this.closest('.product-entry'))">
+                </div>
+            </div>
+            
+            <!-- Custom Dimensions -->
+            <div class="form-group full-width dimension-inputs" data-type="custom">
+                <div class="dimension-input-group" style="grid-column: 1 / -1;">
+                    <label>Custom Dimensions</label>
+                    <input type="text" placeholder="Enter custom dimensions" class="form-control" 
+                           onchange="updateDimensionString(this.closest('.product-entry'))">
+                </div>
+            </div>
+            
+            <!-- Hidden input to store the final dimension string -->
+            <input type="hidden" name="<?= $prefix ?>product_dimensions[]" class="product-dimensions-hidden product-dimensions">
+            
+            <!-- Display the formatted dimensions -->
+            <div class="form-group full-width">
+                <div class="dimension-result"></div>
             </div>
             
             <div class="form-group full-width">
@@ -914,7 +1197,7 @@ function renderProductEntry($type, $products = null) {
                 <label class="form-label">Drawing File (Optional)</label>
                 <div class="file-upload-wrapper">
                     <input type="file" name="drawing_file_<?= $type ?>[]" class="form-control" 
-                           id="<?= $uniqueFileId ?>" onchange="previewSelectedFile(this)">
+                           id="<?= $uniqueFileId ?>" onchange="previewSelectedFile(this)" style="display: none;">
                     <label for="<?= $uniqueFileId ?>" class="file-upload-label">
                         <div class="file-upload-content">
                             <i class="bi bi-cloud-upload"></i>
@@ -925,7 +1208,7 @@ function renderProductEntry($type, $products = null) {
                         </div>
                     </label>
                 </div>
-                 <div class="file-preview-container" style="display:none;">
+                <div class="file-preview-container" style="display:none;">
                     <div class="selected-file-info">
                         <span class="file-icon">📄</span>
                         <div class="file-details">
@@ -940,3 +1223,4 @@ function renderProductEntry($type, $products = null) {
     <?php
     return ob_get_clean();
 }
+?>
