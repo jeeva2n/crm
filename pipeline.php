@@ -1,57 +1,17 @@
 <?php
 session_start();
 require_once 'functions.php';
+require_once 'db.php';
 
-// Log pipeline page access
-logActivity('Pipeline Access', 'User accessed the production pipeline page');
+// Check authentication
+// requireAuth();
 
-// Function to save activity to history file/database
-function saveActivityToHistory($activityEntry) {
-    $logFile = 'activity_logs.json';
-    $logs = [];
-    
-    if (file_exists($logFile)) {
-        $existingLogs = file_get_contents($logFile);
-        $logs = json_decode($existingLogs, true) ?? [];
-    }
-    
-    // Add new log entry at the beginning (newest first)
-    array_unshift($logs, $activityEntry);
-    
-    // Keep only last 1000 entries to prevent file from growing too large
-    if (count($logs) > 1000) {
-        $logs = array_slice($logs, 0, 1000);
-    }
-    
-    // Save to file
-    $result = file_put_contents($logFile, json_encode($logs, JSON_PRETTY_PRINT));
-    
-    // Debug: Check if writing is successful
-    if ($result === false) {
-        error_log("Failed to write to activity log file: " . $logFile);
-    }
-    
-    return $result !== false;
+// Check rate limiting
+if (!checkRateLimit('pipeline_page', $_SESSION['user_id'] ?? 0, 100, 60)) {
+    die('Rate limit exceeded. Please try again later.');
 }
 
-// Debug function to check logging
-function debugLogging() {
-    $logFile = 'activity_logs.json';
-    if (file_exists($logFile)) {
-        $logs = json_decode(file_get_contents($logFile), true) ?? [];
-        error_log("Total logs in file: " . count($logs));
-        if (!empty($logs)) {
-            error_log("Latest log: " . json_encode($logs[0]));
-        }
-    } else {
-        error_log("Activity log file does not exist: " . $logFile);
-    }
-}
-
-// Call this after important actions to debug
-// debugLogging();
-
-// Define standard statuses to be used throughout the system
+// Define standard statuses
 $STANDARD_STATUSES = [
     'Pending',
     'Sourcing Material',
@@ -63,548 +23,1078 @@ $STANDARD_STATUSES = [
     'Shipped'
 ];
 
-// Get current user info
-$currentUser = $_SESSION['username'] ?? 'System';
-$userId = $_SESSION['user_id'] ?? $currentUser;
-$userRole = $_SESSION['role'] ?? 'employee';
+// ==========================================
+// MISSING FUNCTION DECLARATIONS
+// ==========================================
 
-// Reusable function to delete files
-function deleteFile($filePath)
-{
-    if (file_exists($filePath)) {
-        @unlink($filePath);
+if (!function_exists('hasAccessToOrder')) {
+    function hasAccessToOrder($orderId, $userId, $userRole) {
+        if ($userRole === 'admin') {
+            return true;
+        }
+
+        $conn = getDbConnection();
+        $stmt = $conn->prepare("SELECT created_by FROM orders WHERE order_id = ?");
+        $stmt->execute([$orderId]);
+        $order = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $order && ($order['created_by'] == $userId);
     }
 }
 
-// Reusable function to handle file upload
-function uploadFile($file, $uploadDir, $prefix)
-{
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0777, true);
+if (!function_exists('sendShippingNotification')) {
+    function sendShippingNotification($customerId, $orderId, $trackingNumber) {
+        logActivity("Shipping Notification", "Order $orderId shipped with tracking: $trackingNumber");
+        return true;
     }
-
-    $original_name = basename($file['name']);
-    $newFilename = $prefix . '_' . time() . '_' . $original_name;
-
-    if (move_uploaded_file($file['tmp_name'], $uploadDir . $newFilename)) {
-        return ['filename' => $newFilename, 'original' => $original_name];
-    }
-    return false;
 }
 
-// Reusable function to handle multiple file uploads
-function uploadMultipleFiles($files, $uploadDir, $prefix)
-{
-    $uploadedFiles = [];
-    $originalNames = [];
+if (!function_exists('handleStageFileUpload')) {
+    function handleStageFileUpload($file, $index, $orderId, $type) {
+        $uploadDir = 'uploads/' . $type . '_docs/';
+        if (!file_exists($uploadDir)) {
+            mkdir($uploadDir, 0755, true);
+        }
 
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0777, true);
+        $fileName = $file['name'];
+        $fileTmpName = $file['tmp_name'];
+        $fileSize = $file['size'];
+        $fileError = $file['error'];
+
+        if ($fileError !== UPLOAD_ERR_OK) {
+            return ['success' => false, 'error' => 'Upload error'];
+        }
+
+        if ($fileSize > (10 * 1024 * 1024)) {
+            return ['success' => false, 'error' => 'File too large'];
+        }
+
+        $fileExtension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+        $allowedExtensions = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'png', 'jpg', 'jpeg'];
+        if (!in_array($fileExtension, $allowedExtensions)) {
+            return ['success' => false, 'error' => 'Invalid file type'];
+        }
+
+        $safeFileName = $orderId . '_' . $type . '_' . uniqid() . '.' . $fileExtension;
+        $uploadPath = $uploadDir . $safeFileName;
+
+        if (move_uploaded_file($fileTmpName, $uploadPath)) {
+            return [
+                'success' => true,
+                'filename' => $safeFileName,
+                'filepath' => $uploadPath,
+                'original' => $fileName
+            ];
+        }
+
+        return ['success' => false, 'error' => 'Failed to move file'];
     }
+}
 
-    $total_files = count($files['name']);
-    for ($i = 0; $i < $total_files; $i++) {
-        if ($files['error'][$i] == 0) {
-            $original_name = basename($files['name'][$i]);
-            $newFilename = $prefix . '_' . time() . '_' . $i . '_' . $original_name;
-            if (move_uploaded_file($files['tmp_name'][$i], $uploadDir . $newFilename)) {
-                $uploadedFiles[] = $newFilename;
-                $originalNames[] = $original_name;
+if (!function_exists('handleMultipleFileUpload')) {
+    function handleMultipleFileUpload($fileArray, $index, $orderId, $type) {
+        if (!isset($fileArray['tmp_name'][$index]) || empty($fileArray['tmp_name'][$index])) {
+            return ['success' => false, 'error' => 'No file uploaded'];
+        }
+
+        $uploadDir = 'uploads/' . $type . '_photos/';
+        if (!file_exists($uploadDir)) {
+            mkdir($uploadDir, 0755, true);
+        }
+
+        $fileName = $fileArray['name'][$index];
+        $fileTmpName = $fileArray['tmp_name'][$index];
+        $fileSize = $fileArray['size'][$index];
+        $fileError = $fileArray['error'][$index];
+
+        if ($fileError !== UPLOAD_ERR_OK) {
+            return ['success' => false, 'error' => 'Upload error'];
+        }
+
+        if ($fileSize > (10 * 1024 * 1024)) {
+            return ['success' => false, 'error' => 'File too large'];
+        }
+
+        $fileExtension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+        $allowedExtensions = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'png', 'jpg', 'jpeg', 'gif'];
+
+        if (!in_array($fileExtension, $allowedExtensions)) {
+            return ['success' => false, 'error' => 'Invalid file type'];
+        }
+
+        $safeFileName = $orderId . '_' . $type . '_' . uniqid() . '.' . $fileExtension;
+        $uploadPath = $uploadDir . $safeFileName;
+
+        if (move_uploaded_file($fileTmpName, $uploadPath)) {
+            // Create thumbnail for images
+            if (in_array($fileExtension, ['jpg', 'jpeg', 'png', 'gif'])) {
+                $thumbDir = $uploadDir . 'thumbs/';
+                if (!file_exists($thumbDir)) {
+                    mkdir($thumbDir, 0755, true);
+                }
+                createThumbnail($uploadPath, $thumbDir . $safeFileName, 200, 200);
             }
+
+            return [
+                'success' => true,
+                'filename' => $safeFileName,
+                'filepath' => $uploadPath,
+                'original' => $fileName
+            ];
+        }
+
+        return ['success' => false, 'error' => 'Failed to move file'];
+    }
+}
+
+// ==========================================
+// STAGE DISPLAY FUNCTIONS
+// ==========================================
+
+function showPendingStage($order, $item, $itemIndex, $csrfToken)
+{
+    $html = '
+    <div class="stage-section">
+        <div class="stage-header">
+            <h5 class="mb-0"><i class="bi bi-clock"></i> Stage 1: Order Review</h5>
+            <span class="badge bg-secondary">Pending</span>
+        </div>
+        <div class="stage-content">
+            <div class="alert alert-info">
+                <i class="bi bi-info-circle"></i> This order is pending review. Please verify all details before proceeding.
+            </div>
+            
+            <div class="stage-form no-print">
+                <h6>Ready to Start Production?</h6>
+                <form action="pipeline.php" method="post">
+                    <input type="hidden" name="csrf_token" value="' . $csrfToken . '">
+                    <input type="hidden" name="order_id" value="' . htmlspecialchars($order['order_id']) . '">
+                    <input type="hidden" name="item_index" value="' . $itemIndex . '">
+                    <input type="hidden" name="new_item_status" value="Sourcing Material">
+                    <button type="submit" name="update_item_status" class="btn btn-success">
+                        <i class="bi bi-play-circle"></i> Start Material Sourcing
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>';
+
+    return $html;
+}
+
+function showSourcingStage($order, $item, $itemIndex, $csrfToken)
+{
+    $materials = $item['raw_materials'] ?? [];
+
+    $html = '
+    <div class="stage-section">
+        <div class="stage-header">
+            <h5 class="mb-0"><i class="bi bi-box-seam"></i> Stage 2: Material Sourcing</h5>
+            <span class="badge bg-warning">Active</span>
+        </div>
+        <div class="stage-content">
+            <!-- Current Materials -->
+            ' . (!empty($materials) ? showMaterialsTable($materials) : '<div class="alert alert-warning">No materials added yet.</div>') . '
+            
+            <!-- Add Material Form -->
+            <div class="stage-form no-print">
+                <h6>Add Raw Material</h6>
+                <form action="pipeline.php" method="post">
+                    <input type="hidden" name="csrf_token" value="' . $csrfToken . '">
+                    <input type="hidden" name="order_id" value="' . htmlspecialchars($order['order_id']) . '">
+                    <input type="hidden" name="item_index" value="' . $itemIndex . '">
+                    
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label class="form-label">Material Type *</label>
+                            <select name="raw_material_type" class="form-select" required onchange="toggleOtherField(this, \'raw_material_type\')">
+                                <option value="">Select Type</option>
+                                <option value="Steel">Steel</option>
+                                <option value="Aluminum">Aluminum</option>
+                                <option value="Copper">Copper</option>
+                                <option value="Plastic">Plastic</option>
+                                <option value="other">Other</option>
+                            </select>
+                            <input type="text" name="raw_material_type_other" class="form-control mt-1" placeholder="Specify material type" style="display: none;">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Grade/Quality *</label>
+                            <input type="text" name="raw_material_grade" class="form-control" required placeholder="e.g., 304 Stainless">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Dimensions</label>
+                            <input type="text" name="raw_material_dimensions" class="form-control" placeholder="e.g., 100x50x20mm">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Vendor Name</label>
+                            <input type="text" name="vendor_name" class="form-control" placeholder="Supplier name">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Purchase Date</label>
+                            <input type="date" name="purchase_date" class="form-control">
+                        </div>
+                    </div>
+                    
+                    <div class="mt-3">
+                        <button type="submit" name="add_raw_material" class="btn btn-primary">
+                            <i class="bi bi-plus-circle"></i> Add Material
+                        </button>
+                        
+                        ' . (!empty($materials) ? '
+                        <button type="submit" name="update_item_status" value="In Production" 
+                                class="btn btn-success ms-2" onclick="return confirm(\'Move to production stage?\')">
+                            <i class="bi bi-arrow-right"></i> Start Production
+                        </button>' : '') . '
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>';
+
+    return $html;
+}
+
+function showProductionStage($order, $item, $itemIndex, $csrfToken)
+{
+    $processes = $item['machining_processes'] ?? [];
+
+    $html = '
+    <div class="stage-section">
+        <div class="stage-header">
+            <h5 class="mb-0"><i class="bi bi-gear"></i> Stage 3: Production</h5>
+            <span class="badge bg-info">Active</span>
+        </div>
+        <div class="stage-content">
+            <!-- Current Processes -->
+            ' . (!empty($processes) ? showProcessesTable($order, $item, $itemIndex, $processes, $csrfToken) : '<div class="alert alert-warning">No processes added yet.</div>') . '
+            
+            <!-- Add Process Form -->
+            <div class="stage-form no-print">
+                <h6>Add Machining Process</h6>
+                <form action="pipeline.php" method="post">
+                    <input type="hidden" name="csrf_token" value="' . $csrfToken . '">
+                    <input type="hidden" name="order_id" value="' . htmlspecialchars($order['order_id']) . '">
+                    <input type="hidden" name="item_index" value="' . $itemIndex . '">
+                    
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label class="form-label">Process Name *</label>
+                            <select name="process_name" class="form-select" required onchange="toggleOtherField(this, \'process_name\')">
+                                <option value="">Select Process</option>
+                                <option value="Cutting">Cutting</option>
+                                <option value="Milling">Milling</option>
+                                <option value="Turning">Turning</option>
+                                <option value="Drilling">Drilling</option>
+                                <option value="Welding">Welding</option>
+                                <option value="Grinding">Grinding</option>
+                                <option value="other">Other</option>
+                            </select>
+                            <input type="text" name="process_name_other" class="form-control mt-1" placeholder="Specify process" style="display: none;">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Sequence *</label>
+                            <input type="number" name="sequence_number" class="form-control" required min="1" value="' . (count($processes) + 1) . '">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Vendor</label>
+                            <input type="text" name="vendor_name" class="form-control" placeholder="If outsourced">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Start Date</label>
+                            <input type="date" name="start_date" class="form-control">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Expected Completion</label>
+                            <input type="date" name="expected_completion" class="form-control">
+                        </div>
+                    </div>
+                    
+                    <div class="mt-3">
+                        <button type="submit" name="add_machining_process" class="btn btn-primary">
+                            <i class="bi bi-plus-circle"></i> Add Process
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>';
+
+    return $html;
+}
+
+function showQCStage($order, $item, $itemIndex, $csrfToken)
+{
+    $inspections = $item['inspection_data'] ?? [];
+
+    $html = '
+    <div class="stage-section">
+        <div class="stage-header">
+            <h5 class="mb-0"><i class="bi bi-clipboard-check"></i> Stage 4: Quality Control</h5>
+            <span class="badge bg-primary">Active</span>
+        </div>
+        <div class="stage-content">
+            <!-- Inspection History -->
+            ' . (!empty($inspections) ? showInspectionsTable($inspections) : '<div class="alert alert-warning">No inspections conducted yet.</div>') . '
+            
+            <!-- QC Form -->
+            <div class="stage-form no-print">
+                <h6>Submit Inspection Report</h6>
+                <form action="pipeline.php" method="post" enctype="multipart/form-data">
+                    <input type="hidden" name="csrf_token" value="' . $csrfToken . '">
+                    <input type="hidden" name="order_id" value="' . htmlspecialchars($order['order_id']) . '">
+                    <input type="hidden" name="item_index" value="' . $itemIndex . '">
+                    
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label class="form-label">Inspection Type *</label>
+                            <select name="inspection_type" class="form-select" required onchange="toggleOtherField(this, \'inspection_type\')">
+                                <option value="">Select Type</option>
+                                <option value="Dimensional Check">Dimensional Check</option>
+                                <option value="Visual Inspection">Visual Inspection</option>
+                                <option value="Material Verification">Material Verification</option>
+                                <option value="Functional Test">Functional Test</option>
+                                <option value="other">Other</option>
+                            </select>
+                            <input type="text" name="inspection_type_other" class="form-control mt-1" placeholder="Specify inspection type" style="display: none;">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Result *</label>
+                            <select name="inspection_status" class="form-select" required>
+                                <option value="QC Passed">QC Passed</option>
+                                <option value="Rework Required">Rework Required</option>
+                                <option value="Rejected">Rejected</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Technician Name</label>
+                            <input type="text" name="technician_name" class="form-control" placeholder="Inspector name">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Inspection Date</label>
+                            <input type="date" name="inspection_date" class="form-control" value="' . date('Y-m-d') . '">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Remarks</label>
+                            <textarea name="remarks" class="form-control" rows="2" placeholder="Inspection notes..."></textarea>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">QC Document</label>
+                            <input type="file" name="qc_document" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx">
+                            <div class="form-text">Upload inspection report or photos</div>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-3">
+                        <button type="submit" name="submit_inspection_report" class="btn btn-primary">
+                            <i class="bi bi-clipboard-check"></i> Submit Report
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>';
+
+    return $html;
+}
+
+function showPackagingStage($order, $item, $itemIndex, $csrfToken)
+{
+    $lots = $item['packaging_lots'] ?? [];
+
+    $html = '
+    <div class="stage-section">
+        <div class="stage-header">
+            <h5 class="mb-0"><i class="bi bi-box"></i> Stage 5: Packaging</h5>
+            <span class="badge bg-warning">Active</span>
+        </div>
+        <div class="stage-content">
+            <!-- Packaging Lots -->
+            ' . (!empty($lots) ? showPackagingLots($order, $item, $itemIndex, $lots, $csrfToken) : '<div class="alert alert-warning">No packaging lots created yet.</div>') . '
+            
+            <!-- Packaging Form -->
+            <div class="stage-form no-print">
+                <h6>Create Packaging Lot</h6>
+                <form action="pipeline.php" method="post" enctype="multipart/form-data">
+                    <input type="hidden" name="csrf_token" value="' . $csrfToken . '">
+                    <input type="hidden" name="order_id" value="' . htmlspecialchars($order['order_id']) . '">
+                    <input type="hidden" name="item_index" value="' . $itemIndex . '">
+                    
+                    <div class="alert alert-info">
+                        <h6><i class="bi bi-info-circle"></i> Fumigation Details</h6>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="fumigation_completed" value="1" id="fumigationCheck" required>
+                            <label class="form-check-label" for="fumigationCheck">
+                                Fumigation has been completed as per requirements
+                            </label>
+                        </div>
+                        
+                        <div class="row g-2 mt-2">
+                            <div class="col-md-4">
+                                <label class="form-label">Certificate Number</label>
+                                <input type="text" name="fumigation_certificate_number" class="form-control">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">Fumigation Date</label>
+                                <input type="date" name="fumigation_date" class="form-control">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">Agency</label>
+                                <input type="text" name="fumigation_agency" class="form-control">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <h6 class="mt-3">Packaging Details</h6>
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label class="form-label">Packaging Type *</label>
+                            <select name="packaging_type" class="form-select" required onchange="toggleOtherField(this, \'packaging_type\')">
+                                <option value="">Select Type</option>
+                                <option value="Wooden Crate">Wooden Crate</option>
+                                <option value="Cardboard Box">Cardboard Box</option>
+                                <option value="Pallet">Pallet</option>
+                                <option value="other">Other</option>
+                            </select>
+                            <input type="text" name="packaging_type_other" class="form-control mt-1" placeholder="Specify packaging type" style="display: none;">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Packaging Date</label>
+                            <input type="date" name="packaging_date" class="form-control" value="' . date('Y-m-d') . '">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Products in Lot *</label>
+                            <input type="number" name="products_in_lot" class="form-control" required min="1" max="' . $item['quantity'] . '" value="1">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Number of Packages</label>
+                            <input type="number" name="num_packages" class="form-control" min="1" value="1">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Weight per Package (kg)</label>
+                            <input type="number" name="weight_per_package" class="form-control" step="0.01" min="0">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Dimensions per Package</label>
+                            <input type="text" name="dimensions_per_package" class="form-control" placeholder="L x W x H">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Net Weight (kg)</label>
+                            <input type="number" name="net_weight" class="form-control" step="0.01" min="0">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Gross Weight (kg)</label>
+                            <input type="number" name="gross_weight" class="form-control" step="0.01" min="0">
+                        </div>
+                        <div class="col-12">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="docs_included" value="1" id="docsCheck">
+                                <label class="form-check-label" for="docsCheck">
+                                    All required documents included in package
+                                </label>
+                            </div>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Product Photos</label>
+                            <input type="file" name="product_photos[]" class="form-control" multiple accept=".jpg,.jpeg,.png">
+                            <div class="form-text">Upload photos of packaged products</div>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-3">
+                        <button type="submit" name="add_packaging_lot" class="btn btn-primary">
+                            <i class="bi bi-plus-circle"></i> Create Packaging Lot
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>';
+
+    return $html;
+}
+
+function showDispatchStage($order, $item, $itemIndex, $csrfToken)
+{
+    $lots = $item['packaging_lots'] ?? [];
+
+    $html = '
+    <div class="stage-section">
+        <div class="stage-header">
+            <h5 class="mb-0"><i class="bi bi-truck"></i> Stage 6: Ready for Dispatch</h5>
+            <span class="badge bg-info">Ready</span>
+        </div>
+        <div class="stage-content">
+            <!-- Shipping Preparation -->
+            <div class="alert alert-info">
+                <i class="bi bi-info-circle"></i> Products are packaged and ready for shipping. Add shipping documents and dispatch details.
+            </div>
+            
+            <!-- Packaging Lots for Dispatch -->
+            ' . showDispatchLots($order, $item, $itemIndex, $lots, $csrfToken) . '
+        </div>
+    </div>';
+
+    return $html;
+}
+
+function showShippedStage($order, $item, $itemIndex, $csrfToken)
+{
+    $lots = $item['packaging_lots'] ?? [];
+
+    $html = '
+    <div class="stage-section">
+        <div class="stage-header">
+            <h5 class="mb-0"><i class="bi bi-check-circle"></i> Stage 7: Shipped</h5>
+            <span class="badge bg-success">Completed</span>
+        </div>
+        <div class="stage-content">
+            <!-- Shipping Summary -->
+            <div class="alert alert-success">
+                <i class="bi bi-check-circle"></i> This item has been shipped successfully.
+            </div>
+            
+            <!-- Shipping Details -->
+            ' . showShippingSummary($lots) . '
+        </div>
+    </div>';
+
+    return $html;
+}
+
+// Helper functions for displaying tables
+function showMaterialsTable($materials)
+{
+    $html = '<div class="table-responsive"><table class="table table-sm table-bordered">
+        <thead><tr><th>Type</th><th>Grade</th><th>Dimensions</th><th>Vendor</th><th>Purchase Date</th></tr></thead>
+        <tbody>';
+
+    foreach ($materials as $material) {
+        $html .= '<tr>
+            <td>' . htmlspecialchars($material['type']) . '</td>
+            <td>' . htmlspecialchars($material['grade']) . '</td>
+            <td>' . htmlspecialchars($material['dimensions']) . '</td>
+            <td>' . htmlspecialchars($material['vendor']) . '</td>
+            <td>' . htmlspecialchars($material['purchase_date']) . '</td>
+        </tr>';
+    }
+
+    $html .= '</tbody></table></div>';
+    return $html;
+}
+
+function showProcessesTable($order, $item, $itemIndex, $processes, $csrfToken)
+{
+    $html = '<div class="table-responsive"><table class="table table-sm table-bordered">
+        <thead><tr><th>Seq</th><th>Process</th><th>Vendor</th><th>Start Date</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>';
+
+    foreach ($processes as $processIndex => $process) {
+        $statusClass = '';
+        switch ($process['status']) {
+            case 'Completed':
+                $statusClass = 'bg-success';
+                break;
+            case 'In Progress':
+                $statusClass = 'bg-warning';
+                break;
+            default:
+                $statusClass = 'bg-secondary';
+        }
+
+        $html .= '<tr>
+            <td>' . htmlspecialchars($process['sequence']) . '</td>
+            <td>' . htmlspecialchars($process['name']) . '</td>
+            <td>' . htmlspecialchars($process['vendor']) . '</td>
+            <td>' . htmlspecialchars($process['start_date']) . '</td>
+            <td><span class="badge ' . $statusClass . '">' . htmlspecialchars($process['status']) . '</span></td>
+            <td>
+                <button type="button" class="btn btn-sm btn-outline-primary" 
+                    onclick="showProcessModal(' . $itemIndex . ', ' . $processIndex . ')">
+                    <i class="bi bi-pencil"></i>
+                </button>
+            </td>
+        </tr>';
+    }
+
+    $html .= '</tbody></table></div>';
+
+    // Add process update modals
+    foreach ($processes as $processIndex => $process) {
+        $html .= '
+        <div id="processModal-' . $itemIndex . '-' . $processIndex . '" class="modal">
+            <div class="modal-content">
+                <span class="modal-close" onclick="closeProcessModal(' . $itemIndex . ', ' . $processIndex . ')">&times;</span>
+                <h4>Update Process: ' . htmlspecialchars($process['name']) . '</h4>
+                <form action="pipeline.php" method="post" enctype="multipart/form-data">
+                    <input type="hidden" name="csrf_token" value="' . $GLOBALS['csrfToken'] . '">
+                    <input type="hidden" name="order_id" value="' . htmlspecialchars($order['order_id']) . '">
+                    <input type="hidden" name="item_index" value="' . $itemIndex . '">
+                    <input type="hidden" name="process_index" value="' . $processIndex . '">
+                    
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label class="form-label">Actual Completion</label>
+                            <input type="date" name="actual_completion" class="form-control" value="' . htmlspecialchars($process['actual_completion']) . '">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Status</label>
+                            <select name="process_status" class="form-select" required>
+                                <option value="Not Started" ' . ($process['status'] == 'Not Started' ? 'selected' : '') . '>Not Started</option>
+                                <option value="In Progress" ' . ($process['status'] == 'In Progress' ? 'selected' : '') . '>In Progress</option>
+                                <option value="Completed" ' . ($process['status'] == 'Completed' ? 'selected' : '') . '>Completed</option>
+                            </select>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Remarks</label>
+                            <textarea name="remarks" class="form-control" rows="3">' . htmlspecialchars($process['remarks']) . '</textarea>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Process Document</label>
+                            <input type="file" name="process_document" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx">
+                        </div>
+                    </div>
+                    
+                    <div class="mt-3">
+                        <button type="submit" name="update_machining_process" class="btn btn-primary">
+                            <i class="bi bi-check-circle"></i> Update Process
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>';
+    }
+
+    return $html;
+}
+
+function showInspectionsTable($inspections)
+{
+    $html = '<div class="table-responsive"><table class="table table-sm table-bordered">
+        <thead><tr><th>Date</th><th>Type</th><th>Technician</th><th>Result</th><th>Remarks</th></tr></thead>
+        <tbody>';
+
+    foreach ($inspections as $inspection) {
+        $statusClass = '';
+        switch ($inspection['status']) {
+            case 'QC Passed':
+                $statusClass = 'bg-success';
+                break;
+            case 'Rework Required':
+                $statusClass = 'bg-warning';
+                break;
+            case 'Rejected':
+                $statusClass = 'bg-danger';
+                break;
+            default:
+                $statusClass = 'bg-secondary';
+        }
+
+        $html .= '<tr>
+            <td>' . htmlspecialchars($inspection['inspection_date']) . '</td>
+            <td>' . htmlspecialchars($inspection['type']) . '</td>
+            <td>' . htmlspecialchars($inspection['technician_name']) . '</td>
+            <td><span class="badge ' . $statusClass . '">' . htmlspecialchars($inspection['status']) . '</span></td>
+            <td>' . htmlspecialchars(substr($inspection['remarks'], 0, 50)) . '...</td>
+        </tr>';
+    }
+
+    $html .= '</tbody></table></div>';
+    return $html;
+}
+
+function showPackagingLots($order, $item, $itemIndex, $lots, $csrfToken)
+{
+    $html = '<div class="packaging-lots">';
+
+    foreach ($lots as $lotIndex => $lot) {
+        $html .= '
+        <div class="packaging-lot border rounded p-3 mb-3">
+            <h6>Lot #' . ($lotIndex + 1) . ' - ' . htmlspecialchars($lot['packaging_type']) . '</h6>
+            <div class="row">
+                <div class="col-md-6">
+                    <strong>Products:</strong> ' . htmlspecialchars($lot['products_in_lot']) . '<br>
+                    <strong>Packages:</strong> ' . htmlspecialchars($lot['num_packages']) . '<br>
+                    <strong>Net Weight:</strong> ' . htmlspecialchars($lot['net_weight']) . ' kg<br>
+                    <strong>Gross Weight:</strong> ' . htmlspecialchars($lot['gross_weight']) . ' kg
+                </div>
+                <div class="col-md-6">
+                    <strong>Packaging Date:</strong> ' . htmlspecialchars($lot['packaging_date']) . '<br>
+                    <strong>Fumigation:</strong> ' . htmlspecialchars($lot['fumigation_completed']) . '<br>
+                    <strong>Documents Included:</strong> ' . htmlspecialchars($lot['docs_included']) . '
+                </div>
+            </div>';
+
+        // Show photos if available
+        if (!empty($lot['photos'])) {
+            $html .= '<div class="mt-2"><strong>Photos:</strong><div class="d-flex flex-wrap gap-2 mt-1">';
+            foreach ($lot['photos'] as $photoIndex => $photo) {
+                $html .= '<img src="uploads/packaging_photos/thumbs/' . htmlspecialchars($photo) . '" 
+                    class="rounded" style="width: 80px; height: 80px; object-fit: cover; cursor: pointer"
+                    onclick="showImageModal(\'uploads/packaging_photos/' . htmlspecialchars($photo) . '\')">';
+            }
+            $html .= '</div></div>';
+        }
+
+        $html .= '</div>';
+    }
+
+    $html .= '</div>';
+    return $html;
+}
+
+function showDispatchLots($order, $item, $itemIndex, $lots, $csrfToken)
+{
+    $html = '<div class="dispatch-lots">';
+
+    foreach ($lots as $lotIndex => $lot) {
+        $hasShippingDocs = !empty($lot['shipping_documents']);
+        $isShipped = ($lot['dispatch_status'] ?? '') === 'Shipped';
+
+        $html .= '
+        <div class="dispatch-lot border rounded p-3 mb-3">
+            <h6>Lot #' . ($lotIndex + 1) . ' - ' . htmlspecialchars($lot['packaging_type']) . '</h6>
+            
+            ' . (!$hasShippingDocs ? '
+            <div class="alert alert-warning">
+                <form action="pipeline.php" method="post" enctype="multipart/form-data" class="no-print">
+                    <input type="hidden" name="csrf_token" value="' . $csrfToken . '">
+                    <input type="hidden" name="order_id" value="' . htmlspecialchars($order['order_id']) . '">
+                    <input type="hidden" name="item_index" value="' . $itemIndex . '">
+                    <input type="hidden" name="lot_index" value="' . $lotIndex . '">
+                    
+                    <div class="mb-2">
+                        <label class="form-label">Upload Shipping Documents</label>
+                        <input type="file" name="shipping_docs[]" class="form-control" multiple accept=".pdf,.jpg,.jpeg,.png,.doc,.docx">
+                    </div>
+                    <button type="submit" name="add_shipping_documents" class="btn btn-primary btn-sm">
+                        <i class="bi bi-upload"></i> Upload Documents
+                    </button>
+                </form>
+            </div>' : '') . '
+            
+            ' . ($hasShippingDocs && !$isShipped ? '
+            <div class="alert alert-info">
+                <form action="pipeline.php" method="post" class="no-print">
+                    <input type="hidden" name="csrf_token" value="' . $csrfToken . '">
+                    <input type="hidden" name="order_id" value="' . htmlspecialchars($order['order_id']) . '">
+                    <input type="hidden" name="item_index" value="' . $itemIndex . '">
+                    <input type="hidden" name="lot_index" value="' . $lotIndex . '">
+                    
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <label class="form-label">Dispatch Date *</label>
+                            <input type="date" name="dispatch_date" class="form-control" required value="' . date('Y-m-d') . '">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Transport Mode *</label>
+                            <select name="transport_mode" class="form-select" required>
+                                <option value="">Select Mode</option>
+                                <option value="Road">Road</option>
+                                <option value="Air">Air</option>
+                                <option value="Sea">Sea</option>
+                                <option value="Rail">Rail</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Tracking Number</label>
+                            <input type="text" name="tracking_number" class="form-control" placeholder="Tracking ID">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Remarks</label>
+                            <textarea name="dispatch_remarks" class="form-control" rows="2" placeholder="Dispatch notes..."></textarea>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-2">
+                        <button type="submit" name="update_dispatch_details" class="btn btn-success">
+                            <i class="bi bi-truck"></i> Mark as Shipped
+                        </button>
+                    </div>
+                </form>
+            </div>' : '') . '
+            
+            ' . ($isShipped ? '
+            <div class="alert alert-success">
+                <i class="bi bi-check-circle"></i> This lot has been shipped.<br>
+                <strong>Shipped via:</strong> ' . htmlspecialchars($lot['transport_mode']) . '<br>
+                <strong>Tracking:</strong> ' . htmlspecialchars($lot['tracking_number']) . '<br>
+                <strong>Date:</strong> ' . htmlspecialchars($lot['dispatch_date']) . '
+            </div>' : '') . '
+        </div>';
+    }
+
+    $html .= '</div>';
+    return $html;
+}
+
+function showShippingSummary($lots)
+{
+    $html = '<div class="shipping-summary">';
+
+    foreach ($lots as $lotIndex => $lot) {
+        if (($lot['dispatch_status'] ?? '') === 'Shipped') {
+            $html .= '
+            <div class="shipping-lot border rounded p-3 mb-3">
+                <h6>Lot #' . ($lotIndex + 1) . '</h6>
+                <div class="row">
+                    <div class="col-md-6">
+                        <strong>Transport:</strong> ' . htmlspecialchars($lot['transport_mode']) . '<br>
+                        <strong>Tracking:</strong> ' . htmlspecialchars($lot['tracking_number']) . '<br>
+                        <strong>Dispatch Date:</strong> ' . htmlspecialchars($lot['dispatch_date']) . '
+                    </div>
+                    <div class="col-md-6">
+                        <strong>Products Shipped:</strong> ' . htmlspecialchars($lot['products_in_lot']) . '<br>
+                        <strong>Weight:</strong> ' . htmlspecialchars($lot['gross_weight']) . ' kg<br>
+                        <strong>Packages:</strong> ' . htmlspecialchars($lot['num_packages']) . '
+                    </div>
+                </div>
+            </div>';
         }
     }
 
-    return ['files' => $uploadedFiles, 'originals' => $originalNames];
+    $html .= '</div>';
+    return $html;
 }
 
-// Reusable function to update order data
-function updateOrderData($orderId, $items, $status = null)
-{
-    // Use database function instead of CSV
-    return updateOrderItems($orderId, $items, $status);
-}
+// ==========================================
+// REQUEST HANDLING
+// ==========================================
 
-// Reusable function to set success message and redirect
-function setMessageAndRedirect($type, $message)
-{
-    $_SESSION['message'] = ['type' => $type, 'text' => $message];
+// Handle order deletion
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_order'])) {
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid security token.'];
+        header('Location: pipeline.php');
+        exit;
+    }
+
+    $orderId = sanitize_input($_POST['order_id']);
+
+    if (hasAccessToOrder($orderId, $_SESSION['user_id'] ?? 0, $_SESSION['role'] ?? 'employee')) {
+        if (deleteOrder($orderId)) {
+            $_SESSION['message'] = ['type' => 'success', 'text' => "Order #$orderId deleted successfully."];
+            logActivity("Order Deleted", "Order #$orderId deleted from pipeline");
+        } else {
+            $_SESSION['message'] = ['type' => 'error', 'text' => 'Failed to delete order.'];
+        }
+    } else {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'You do not have permission to delete this order.'];
+    }
+
     header('Location: pipeline.php');
     exit;
 }
 
-// --- Handle Order Deletion ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_order'])) {
-    $orderId = sanitize_input($_POST['order_id']);
-
-    if (!empty($orderId)) {
-        $orderToDelete = getOrderById($orderId);
-
-        if ($orderToDelete) {
-            // Get order items to delete associated files
-            $items = getOrderItems($orderId);
-            
-            // Delete associated files
-            foreach ($items as $item) {
-                // Delete item drawings
-                if (!empty($item['drawing_filename'])) {
-                    deleteFile(__DIR__ . '/uploads/drawings/' . $item['drawing_filename']);
-                }
-
-                // Delete machining documents
-                if (!empty($item['machining_processes'])) {
-                    foreach ($item['machining_processes'] as $process) {
-                        if (!empty($process['documents'])) {
-                            foreach ($process['documents'] as $doc) {
-                                deleteFile(__DIR__ . '/uploads/machining_docs/' . $doc);
-                            }
-                        }
-                    }
-                }
-
-                // Delete inspection documents
-                if (!empty($item['inspection_data']) && is_array($item['inspection_data'])) {
-                    foreach ($item['inspection_data'] as $inspection) {
-                        if (!empty($inspection['documents'])) {
-                            foreach ($inspection['documents'] as $doc) {
-                                deleteFile(__DIR__ . '/uploads/inspection_reports/' . $doc);
-                            }
-                        }
-                    }
-                }
-
-                // Delete packaging photos
-                if (!empty($item['packaging_lots'])) {
-                    foreach ($item['packaging_lots'] as $lot) {
-                        if (!empty($lot['photos'])) {
-                            foreach ($lot['photos'] as $photo) {
-                                deleteFile(__DIR__ . '/uploads/packaging_photos/' . $photo);
-                            }
-                        }
-
-                        // Delete shipping documents
-                        if (!empty($lot['shipping_documents'])) {
-                            foreach ($lot['shipping_documents'] as $doc) {
-                                deleteFile(__DIR__ . '/uploads/shipping_docs/' . $doc);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Delete the order from database
-            if (deleteOrder($orderId)) {
-                logChange($orderId, 'Order Management', "User '$currentUser' ($userRole) deleted order #$orderId");
-                setMessageAndRedirect('success', "Order #$orderId has been deleted successfully by $currentUser.");
-            } else {
-                setMessageAndRedirect('error', 'Failed to delete the order.');
-            }
-        } else {
-            setMessageAndRedirect('error', 'Order not found.');
-        }
-    } else {
-        setMessageAndRedirect('error', 'Invalid order ID.');
-    }
-}
-
-// --- Handle Item Deletion from Order ---
+// Handle item deletion
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_item'])) {
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid security token.'];
+        header('Location: pipeline.php');
+        exit;
+    }
+
     $orderId = sanitize_input($_POST['order_id']);
-    $itemIndex = (int) $_POST['item_index'];
+    $itemIndex = (int)$_POST['item_index'];
 
-    $items = getOrderItems($orderId);
-    
-    if (isset($items[$itemIndex])) {
-        $itemName = $items[$itemIndex]['Name'] ?? 'Unknown';
-        $itemSNo = $items[$itemIndex]['S.No'] ?? '';
+    if (hasAccessToOrder($orderId, $_SESSION['user_id'] ?? 0, $_SESSION['role'] ?? 'employee')) {
+        $items = getOrderItems($orderId);
+        if (isset($items[$itemIndex])) {
+            $itemName = $items[$itemIndex]['Name'] ?? 'Unknown';
 
-        // Delete item drawing if exists
-        if (!empty($items[$itemIndex]['drawing_filename'])) {
-            deleteFile(__DIR__ . '/uploads/drawings/' . $items[$itemIndex]['drawing_filename']);
-        }
+            // Remove item
+            array_splice($items, $itemIndex, 1);
 
-        // Remove the item from the array
-        array_splice($items, $itemIndex, 1);
-
-        // Update the order items in database
-        if (updateOrderItems($orderId, $items)) {
-            logChange($orderId, 'Order Management', "User '$currentUser' ($userRole) deleted item '$itemName' at index $itemIndex", $itemIndex);
-            setMessageAndRedirect('success', "Item deleted successfully by $currentUser.");
+            try {
+                if (updateOrderItems($orderId, $items)) {
+                    $_SESSION['message'] = ['type' => 'success', 'text' => "Item '$itemName' deleted successfully."];
+                    logChange($orderId, 'Item Deletion', "Deleted item: $itemName", $itemIndex);
+                } else {
+                    $_SESSION['message'] = ['type' => 'error', 'text' => 'Failed to delete item.'];
+                }
+            } catch (Exception $e) {
+                $_SESSION['message'] = ['type' => 'error', 'text' => 'Error deleting item: ' . $e->getMessage()];
+            }
         } else {
-            setMessageAndRedirect('error', 'Failed to delete item.');
+            $_SESSION['message'] = ['type' => 'error', 'text' => 'Item not found.'];
         }
     } else {
-        setMessageAndRedirect('error', 'Item not found.');
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'You do not have permission to delete items from this order.'];
     }
+
+    header('Location: pipeline.php');
+    exit;
 }
 
-// --- Handle Item Drawing Update ---
+// Handle item drawing update
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_item_drawing'])) {
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid security token.'];
+        header('Location: pipeline.php');
+        exit;
+    }
+
     $orderId = sanitize_input($_POST['order_id']);
-    $itemIndex = (int) $_POST['item_index'];
+    $itemIndex = (int)$_POST['item_index'];
 
     if (isset($_FILES['item_drawing']) && $_FILES['item_drawing']['error'] == 0) {
         $items = getOrderItems($orderId);
 
         if (isset($items[$itemIndex])) {
-            // Delete old drawing if exists
-            if (!empty($items[$itemIndex]['drawing_filename'])) {
-                deleteFile(__DIR__ . '/uploads/drawings/' . $items[$itemIndex]['drawing_filename']);
-            }
+            // Handle file upload
+            $uploadResult = handleItemFileUpload($_FILES['item_drawing'], 0, $orderId, $items[$itemIndex]['S.No'] ?? 'item');
 
-            // Upload new drawing
-            $uploadResult = uploadFile(
-                $_FILES['item_drawing'],
-                __DIR__ . '/uploads/drawings/',
-                $orderId . '_item' . $itemIndex
-            );
-
-            if ($uploadResult) {
+            if ($uploadResult['filename']) {
                 $items[$itemIndex]['drawing_filename'] = $uploadResult['filename'];
                 $items[$itemIndex]['original_filename'] = $uploadResult['original'];
 
                 if (updateOrderItems($orderId, $items)) {
-                    $itemName = $items[$itemIndex]['Name'] ?? 'Unknown Item';
-                    logChange($orderId, 'Item Update', "User '$currentUser' ($userRole) updated drawing for '$itemName' - File: {$uploadResult['original']}", $itemIndex);
-                    setMessageAndRedirect('success', "Drawing updated successfully by $currentUser.");
+                    $_SESSION['message'] = ['type' => 'success', 'text' => 'Drawing updated successfully.'];
+                    logChange($orderId, 'Drawing Update', "Updated drawing for item: " . $items[$itemIndex]['Name'], $itemIndex);
                 } else {
-                    setMessageAndRedirect('error', 'Failed to update drawing in database.');
+                    $_SESSION['message'] = ['type' => 'error', 'text' => 'Failed to update drawing.'];
                 }
             } else {
-                setMessageAndRedirect('error', 'Failed to upload drawing.');
+                $_SESSION['message'] = ['type' => 'error', 'text' => 'File upload failed: ' . ($uploadResult['error'] ?? 'Unknown error')];
             }
         } else {
-            setMessageAndRedirect('error', 'Item not found.');
+            $_SESSION['message'] = ['type' => 'error', 'text' => 'Item not found.'];
         }
     } else {
-        setMessageAndRedirect('error', 'No drawing file uploaded or upload error.');
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'No file uploaded or upload error.'];
     }
+
+    header('Location: pipeline.php');
+    exit;
 }
 
-// --- Handle Individual Item Status Update ---
+// Handle item status update
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_item_status'])) {
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid security token.'];
+        header('Location: pipeline.php');
+        exit;
+    }
+
     $orderId = sanitize_input($_POST['order_id']);
-    $itemIndex = (int) $_POST['item_index'];
-    $newItemStatus = sanitize_input($_POST['new_item_status']);
+    $itemIndex = (int)$_POST['item_index'];
+    $newStatus = sanitize_input($_POST['new_item_status']);
 
-    global $STANDARD_STATUSES;
-
-    if (!empty($orderId) && in_array($newItemStatus, $STANDARD_STATUSES)) {
+    if (in_array($newStatus, $STANDARD_STATUSES)) {
         $items = getOrderItems($orderId);
+
         if (isset($items[$itemIndex])) {
             $oldStatus = $items[$itemIndex]['item_status'] ?? 'Pending';
-            $itemName = $items[$itemIndex]['Name'] ?? 'Unknown Item';
-            $items[$itemIndex]['item_status'] = $newItemStatus;
-            
+            $items[$itemIndex]['item_status'] = $newStatus;
+
             if (updateOrderItems($orderId, $items)) {
-                // Enhanced logging with user details
-                $changeDescription = "User '$currentUser' ($userRole) changed ITEM STATUS for '$itemName' from '$oldStatus' to '$newItemStatus'";
-                logChange($orderId, 'Item Status Update', $changeDescription, $itemIndex);
-                
-                // Additional activity log
-                logActivity('Item Status Change', "Order #$orderId - Item '$itemName' status changed from '$oldStatus' to '$newItemStatus'");
-                
-                setMessageAndRedirect('success', "Item status updated to $newItemStatus by $currentUser.");
+                $_SESSION['message'] = ['type' => 'success', 'text' => "Item status updated to $newStatus."];
+                logChange($orderId, 'Item Status', "Changed from $oldStatus to $newStatus", $itemIndex);
             } else {
-                setMessageAndRedirect('error', 'Failed to update item status in database.');
+                $_SESSION['message'] = ['type' => 'error', 'text' => 'Failed to update item status.'];
             }
         } else {
-            setMessageAndRedirect('error', 'Item not found.');
-        }
-    }
-}
-
-// --- STAGE 7: Handle Dispatch Form Submission ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_dispatch_details'])) {
-    $orderId = sanitize_input($_POST['order_id']);
-    $itemIndex = (int) $_POST['item_index'];
-    $lotIndex = (int) $_POST['lot_index'];
-
-    $items = getOrderItems($orderId);
-
-    if (isset($items[$itemIndex]['packaging_lots'][$lotIndex])) {
-        $lot = &$items[$itemIndex]['packaging_lots'][$lotIndex];
-        $lot['dispatch_status'] = 'Shipped';
-        $lot['dispatch_date'] = sanitize_input($_POST['dispatch_date']);
-        $lot['transport_mode'] = sanitize_input($_POST['transport_mode']);
-        $lot['tracking_number'] = sanitize_input($_POST['tracking_number']);
-        $lot['dispatch_remarks'] = sanitize_input($_POST['dispatch_remarks']);
-
-        // Check if all lots for this item are shipped
-        $all_item_lots_shipped = true;
-        if (isset($items[$itemIndex]['packaging_lots'])) {
-            foreach ($items[$itemIndex]['packaging_lots'] as $check_lot) {
-                if (($check_lot['dispatch_status'] ?? '') !== 'Shipped') {
-                    $all_item_lots_shipped = false;
-                    break;
-                }
-            }
-        }
-
-        // If all lots for this item are shipped, update item status
-        if ($all_item_lots_shipped) {
-            $items[$itemIndex]['item_status'] = 'Shipped';
-        }
-
-        // Check if all lots in the entire order are shipped
-        $all_lots_shipped = true;
-        foreach ($items as $item) {
-            if (isset($item['packaging_lots'])) {
-                foreach ($item['packaging_lots'] as $check_lot) {
-                    if (($check_lot['dispatch_status'] ?? '') !== 'Shipped') {
-                        $all_lots_shipped = false;
-                        break 2;
-                    }
-                }
-            }
-        }
-
-        // If all lots shipped, update order status
-        $orderStatus = $all_lots_shipped ? 'Shipped' : null;
-
-        if (updateOrderItems($orderId, $items, $orderStatus)) {
-            logChange($orderId, 'Dispatch', "User '$currentUser' ($userRole) dispatched via {$lot['transport_mode']} - Tracking: {$lot['tracking_number']}", $itemIndex);
-            setMessageAndRedirect('success', "Dispatch details updated successfully by $currentUser. Client notified.");
-        } else {
-            setMessageAndRedirect('error', 'Failed to update dispatch details in database.');
+            $_SESSION['message'] = ['type' => 'error', 'text' => 'Item not found.'];
         }
     } else {
-        setMessageAndRedirect('error', 'Could not find the specified lot.');
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid status.'];
     }
+
+    header('Location: pipeline.php');
+    exit;
 }
 
-// --- STAGE 6: Handle Shipping Documentation Form Submission ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_shipping_documents'])) {
+// Handle order status update
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid security token.'];
+        header('Location: pipeline.php');
+        exit;
+    }
+
     $orderId = sanitize_input($_POST['order_id']);
-    $itemIndex = (int) $_POST['item_index'];
-    $lotIndex = (int) $_POST['lot_index'];
+    $newStatus = sanitize_input($_POST['new_status']);
 
-    $items = getOrderItems($orderId);
+    if (in_array($newStatus, $STANDARD_STATUSES) && hasAccessToOrder($orderId, $_SESSION['user_id'] ?? 0, $_SESSION['role'] ?? 'employee')) {
+        $order = getOrderById($orderId);
+        $oldStatus = $order['status'] ?? 'Pending';
 
-    if (isset($items[$itemIndex]['packaging_lots'][$lotIndex])) {
-        $uploadResult = uploadMultipleFiles(
-            $_FILES['shipping_docs'],
-            __DIR__ . '/uploads/shipping_docs/',
-            $orderId . '_item' . $itemIndex . '_lot' . $lotIndex
-        );
+        if (updateOrder($orderId, ['status' => $newStatus])) {
+            $_SESSION['message'] = ['type' => 'success', 'text' => "Order status updated to $newStatus."];
+            logChange($orderId, 'Order Status', "Changed from $oldStatus to $newStatus");
 
-        if (!empty($uploadResult['files'])) {
-            if (!isset($items[$itemIndex]['packaging_lots'][$lotIndex]['shipping_documents'])) {
-                $items[$itemIndex]['packaging_lots'][$lotIndex]['shipping_documents'] = [];
-            }
-            if (!isset($items[$itemIndex]['packaging_lots'][$lotIndex]['shipping_original_filenames'])) {
-                $items[$itemIndex]['packaging_lots'][$lotIndex]['shipping_original_filenames'] = [];
-            }
-
-            $items[$itemIndex]['packaging_lots'][$lotIndex]['shipping_documents'] = array_merge(
-                $items[$itemIndex]['packaging_lots'][$lotIndex]['shipping_documents'],
-                $uploadResult['files']
-            );
-            $items[$itemIndex]['packaging_lots'][$lotIndex]['shipping_original_filenames'] = array_merge(
-                $items[$itemIndex]['packaging_lots'][$lotIndex]['shipping_original_filenames'],
-                $uploadResult['originals']
-            );
-
-            // Update item status to Ready for Dispatch
-            $items[$itemIndex]['item_status'] = 'Ready for Dispatch';
-
-            // Update order status to Ready for Dispatch if this is the first item ready
-            $orderStatus = null;
-            $currentOrder = getOrderById($orderId);
-            if ($currentOrder && $currentOrder['status'] !== 'Ready for Dispatch' && $currentOrder['status'] !== 'Shipped') {
-                $orderStatus = 'Ready for Dispatch';
-            }
-
-            if (updateOrderItems($orderId, $items, $orderStatus)) {
-                logChange($orderId, 'Shipping Documents', "User '$currentUser' ($userRole) uploaded shipping documents for Lot #" . ($lotIndex + 1), $itemIndex);
-                setMessageAndRedirect('success', "Shipping documents uploaded by $currentUser. Logistics team notified.");
-            } else {
-                setMessageAndRedirect('error', 'Failed to update shipping documents in database.');
+            // Send notification if shipped
+            if ($newStatus === 'Shipped') {
+                sendOrderStatusNotification($orderId, $newStatus);
             }
         } else {
-            setMessageAndRedirect('error', 'No documents were uploaded.');
+            $_SESSION['message'] = ['type' => 'error', 'text' => 'Failed to update order status.'];
         }
     } else {
-        setMessageAndRedirect('error', 'Could not find the specified lot.');
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid status or insufficient permissions.'];
     }
+
+    header('Location: pipeline.php');
+    exit;
 }
 
-// --- STAGE 5: Handle Packaging Form Submission ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_packaging_lot'])) {
+// Stage 2: Raw Materials
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_raw_material'])) {
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid security token.'];
+        header('Location: pipeline.php');
+        exit;
+    }
+
     $orderId = sanitize_input($_POST['order_id']);
-    $itemIndex = (int) $_POST['item_index'];
+    $itemIndex = (int)$_POST['item_index'];
 
-    // Verify fumigation is checked
-    if (!isset($_POST['fumigation_completed']) || $_POST['fumigation_completed'] != '1') {
-        setMessageAndRedirect('error', 'Fumigation must be completed before packaging. Please confirm fumigation completion.');
+    $materialType = sanitize_input($_POST['raw_material_type']);
+    if ($materialType === 'other') {
+        $materialType = sanitize_input($_POST['raw_material_type_other']);
     }
 
-    // Handle the "other" packaging type option
-    $packagingType = sanitize_input($_POST['packaging_type']);
-    if ($packagingType === 'other') {
-        $packagingType = sanitize_input($_POST['packaging_type_other']);
-    }
-
-    $items = getOrderItems($orderId);
-
-    // Handle multiple photo uploads
-    $uploadResult = uploadMultipleFiles(
-        $_FILES['product_photos'],
-        __DIR__ . '/uploads/packaging_photos/',
-        $orderId . '_' . $itemIndex . '_lot'
-    );
-
-    // Create the new lot data structure with fumigation data
-    $newLot = [
-        'photos' => $uploadResult['files'],
-        'original_photo_names' => $uploadResult['originals'],
-        'products_in_lot' => sanitize_input($_POST['products_in_lot']),
-        'docs_included' => isset($_POST['docs_included']) ? 'Yes' : 'No',
-        'packaging_type' => $packagingType,
-        'packaging_date' => sanitize_input($_POST['packaging_date']),
-        'num_packages' => sanitize_input($_POST['num_packages']),
-        'weight_per_package' => sanitize_input($_POST['weight_per_package']),
-        'dimensions_per_package' => sanitize_input($_POST['dimensions_per_package']),
-        'net_weight' => sanitize_input($_POST['net_weight']),
-        'gross_weight' => sanitize_input($_POST['gross_weight']),
-        'fumigation_completed' => 'Yes',
-        'fumigation_certificate_number' => sanitize_input($_POST['fumigation_certificate_number']),
-        'fumigation_date' => sanitize_input($_POST['fumigation_date']),
-        'fumigation_agency' => sanitize_input($_POST['fumigation_agency']),
+    $newMaterial = [
+        'type' => $materialType,
+        'grade' => sanitize_input($_POST['raw_material_grade']),
+        'dimensions' => sanitize_input($_POST['raw_material_dimensions']),
+        'vendor' => sanitize_input($_POST['vendor_name']),
+        'purchase_date' => sanitize_input($_POST['purchase_date'])
     ];
 
-    // Initialize the packaging_lots array if it doesn't exist
-    if (!isset($items[$itemIndex]['packaging_lots'])) {
-        $items[$itemIndex]['packaging_lots'] = [];
-    }
-    $items[$itemIndex]['packaging_lots'][] = $newLot;
-
-    // Update item status to Packaging
-    $items[$itemIndex]['item_status'] = 'Packaging';
-
-    // Update order status if needed
-    $orderStatus = null;
-    $currentOrder = getOrderById($orderId);
-    if ($currentOrder && $currentOrder['status'] === 'QC Completed') {
-        $orderStatus = 'Packaging';
-    }
-
-    if (updateOrderItems($orderId, $items, $orderStatus)) {
-        $lotNumber = count($items[$itemIndex]['packaging_lots']);
-        $fumigationInfo = "Fumigation cert: {$newLot['fumigation_certificate_number']}";
-        logChange($orderId, 'Packaging', "User '$currentUser' ($userRole) added packaging lot #$lotNumber: {$newLot['products_in_lot']} products. $fumigationInfo", $itemIndex);
-        setMessageAndRedirect('success', "Packaging lot #$lotNumber added with fumigation confirmation by $currentUser. Documentation team notified.");
-    } else {
-        setMessageAndRedirect('error', 'Failed to add packaging lot to database.');
-    }
-}
-
-// --- STAGE 4: Handle Quality Inspection Form Submission ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_inspection_report'])) {
-    $orderId = sanitize_input($_POST['order_id']);
-    $itemIndex = (int) $_POST['item_index'];
-
     $items = getOrderItems($orderId);
-
-    // Initialize inspection_data array if it doesn't exist
-    if (!isset($items[$itemIndex]['inspection_data'])) {
-        $items[$itemIndex]['inspection_data'] = [];
-    }
-
-    // Handle inspection type
-    $inspectionType = sanitize_input($_POST['inspection_type']);
-    if ($inspectionType === 'other') {
-        $inspectionType = sanitize_input($_POST['inspection_type_other']);
-    }
-
-    $newInspection = [
-        'inspection_id' => uniqid('QC_'),
-        'status' => sanitize_input($_POST['inspection_status']),
-        'type' => $inspectionType,
-        'technician_name' => sanitize_input($_POST['technician_name']),
-        'inspection_date' => sanitize_input($_POST['inspection_date']),
-        'remarks' => sanitize_input($_POST['remarks']),
-        'documents' => [],
-        'original_filenames' => []
-    ];
-
-    // Handle file upload
-    if (isset($_FILES['qc_document']) && $_FILES['qc_document']['error'] == 0) {
-        $uploadResult = uploadFile(
-            $_FILES['qc_document'],
-            __DIR__ . '/uploads/inspection_reports/',
-            $orderId . '_' . $itemIndex . '_qc'
-        );
-
-        if ($uploadResult) {
-            $newInspection['documents'][] = $uploadResult['filename'];
-            $newInspection['original_filenames'][] = $uploadResult['original'];
-        }
-    }
-
-    // Add the new inspection to the array
-    $items[$itemIndex]['inspection_data'][] = $newInspection;
-
-    logChange($orderId, 'Quality Inspection', "User '$currentUser' ($userRole) submitted QC Result: {$newInspection['status']} - {$newInspection['type']}", $itemIndex);
-
-    // Check inspection results
-    $hasRework = false;
-    $allPassed = true;
-    foreach ($items[$itemIndex]['inspection_data'] as $inspection) {
-        if ($inspection['status'] === 'Rework Required') {
-            $hasRework = true;
-            $allPassed = false;
-        } elseif ($inspection['status'] !== 'QC Passed') {
-            $allPassed = false;
-        }
-    }
-
-    if ($hasRework) {
-        $items[$itemIndex]['item_status'] = 'In Production';
-        $orderStatus = 'In Production';
-        $message = "Item marked for rework by $currentUser. Production team notified.";
-    } elseif ($allPassed) {
-        $items[$itemIndex]['item_status'] = 'QC Completed';
-
-        // Check if all items have passed QC
-        $all_items_passed = true;
-        foreach ($items as $item) {
-            if (empty($item['inspection_data'])) {
-                $all_items_passed = false;
-                break;
-            }
-            $hasPassedInspection = false;
-            foreach ($item['inspection_data'] as $insp) {
-                if ($insp['status'] === 'QC Passed') {
-                    $hasPassedInspection = true;
-                    break;
-                }
-            }
-            if (!$hasPassedInspection) {
-                $all_items_passed = false;
-                break;
-            }
+    if (isset($items[$itemIndex])) {
+        if (!isset($items[$itemIndex]['raw_materials'])) {
+            $items[$itemIndex]['raw_materials'] = [];
         }
 
-        $orderStatus = $all_items_passed ? 'QC Completed' : null;
-        $message = $all_items_passed ? "All items passed QC by $currentUser. Order ready for packaging." : "Inspection completed successfully by $currentUser.";
+        $items[$itemIndex]['raw_materials'][] = $newMaterial;
+        $items[$itemIndex]['item_status'] = 'Sourcing Material';
+
+        if (updateOrderItems($orderId, $items, 'Sourcing Material')) {
+            $_SESSION['message'] = ['type' => 'success', 'text' => 'Raw material added successfully.'];
+            logChange($orderId, 'Raw Materials', "Added material: $materialType - {$newMaterial['grade']}", $itemIndex);
+        } else {
+            $_SESSION['message'] = ['type' => 'error', 'text' => 'Failed to add raw material.'];
+        }
     } else {
-        $orderStatus = null;
-        $message = "Inspection recorded with minor issues by $currentUser.";
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Item not found.'];
     }
 
-    if (updateOrderItems($orderId, $items, $orderStatus)) {
-        setMessageAndRedirect('success', $message);
-    } else {
-        setMessageAndRedirect('error', 'Failed to save inspection report to database.');
-    }
+    header('Location: pipeline.php');
+    exit;
 }
 
-// --- STAGE 3: Handle Machining Process Forms ---
+// Stage 3: Machining Process
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_machining_process'])) {
-    $orderId = sanitize_input($_POST['order_id']);
-    $itemIndex = (int) $_POST['item_index'];
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid security token.'];
+        header('Location: pipeline.php');
+        exit;
+    }
 
-    // Handle the "other" process name option
+    $orderId = sanitize_input($_POST['order_id']);
+    $itemIndex = (int)$_POST['item_index'];
+
     $processName = sanitize_input($_POST['process_name']);
     if ($processName === 'other') {
         $processName = sanitize_input($_POST['process_name_other']);
@@ -624,217 +1114,384 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_machining_process
     ];
 
     $items = getOrderItems($orderId);
-    if (!isset($items[$itemIndex]['machining_processes'])) {
-        $items[$itemIndex]['machining_processes'] = [];
-    }
-    $items[$itemIndex]['machining_processes'][] = $newProcess;
+    if (isset($items[$itemIndex])) {
+        if (!isset($items[$itemIndex]['machining_processes'])) {
+            $items[$itemIndex]['machining_processes'] = [];
+        }
 
-    // Update item status to In Production
-    $items[$itemIndex]['item_status'] = 'In Production';
-    $orderStatus = null;
-    $currentOrder = getOrderById($orderId);
-    if ($currentOrder && $currentOrder['status'] !== 'In Production') {
-        $orderStatus = 'In Production';
-    }
+        $items[$itemIndex]['machining_processes'][] = $newProcess;
+        $items[$itemIndex]['item_status'] = 'In Production';
 
-    usort($items[$itemIndex]['machining_processes'], function ($a, $b) {
-        return $a['sequence'] <=> $b['sequence'];
-    });
+        // Sort by sequence
+        usort($items[$itemIndex]['machining_processes'], function ($a, $b) {
+            return $a['sequence'] <=> $b['sequence'];
+        });
 
-    if (updateOrderItems($orderId, $items, $orderStatus)) {
-        logChange($orderId, 'Machining Process', "User '$currentUser' ($userRole) added process: {$newProcess['name']} (Seq: {$newProcess['sequence']})", $itemIndex);
-        setMessageAndRedirect('success', "Machining process added to production schedule by $currentUser.");
+        if (updateOrderItems($orderId, $items, 'In Production')) {
+            $_SESSION['message'] = ['type' => 'success', 'text' => 'Machining process added successfully.'];
+            logChange($orderId, 'Machining', "Added process: $processName (Seq: {$newProcess['sequence']})", $itemIndex);
+        } else {
+            $_SESSION['message'] = ['type' => 'error', 'text' => 'Failed to add machining process.'];
+        }
     } else {
-        setMessageAndRedirect('error', 'Failed to add machining process to database.');
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Item not found.'];
     }
+
+    header('Location: pipeline.php');
+    exit;
 }
 
+// Update machining process
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_machining_process'])) {
-    $orderId = sanitize_input($_POST['order_id']);
-    $itemIndex = (int) $_POST['item_index'];
-    $processIndex = (int) $_POST['process_index'];
-
-    $items = getOrderItems($orderId);
-    $process = &$items[$itemIndex]['machining_processes'][$processIndex];
-
-    // Update machining process
-    $process['actual_completion'] = sanitize_input($_POST['actual_completion']);
-    $process['status'] = sanitize_input($_POST['process_status']);
-    $process['remarks'] = sanitize_input($_POST['remarks']);
-
-    // Handle file upload
-    if (isset($_FILES['process_document']) && $_FILES['process_document']['error'] === 0) {
-        $uploadResult = uploadFile(
-            $_FILES['process_document'],
-            __DIR__ . '/uploads/machining_docs/',
-            $orderId . '_' . $itemIndex . '_' . $processIndex
-        );
-
-        if ($uploadResult) {
-            if (!isset($process['documents']) || !is_array($process['documents'])) {
-                $process['documents'] = [];
-            }
-            if (!isset($process['original_filenames']) || !is_array($process['original_filenames'])) {
-                $process['original_filenames'] = [];
-            }
-            $process['documents'][] = $uploadResult['filename'];
-            $process['original_filenames'][] = $uploadResult['original'];
-        }
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid security token.'];
+        header('Location: pipeline.php');
+        exit;
     }
 
-    logChange($orderId, 'Machining Process', "User '$currentUser' ($userRole) updated process status to: {$process['status']}", $itemIndex);
+    $orderId = sanitize_input($_POST['order_id']);
+    $itemIndex = (int)$_POST['item_index'];
+    $processIndex = (int)$_POST['process_index'];
 
-    $orderStatus = null;
-    $message = "Machining process updated by $currentUser.";
+    $items = getOrderItems($orderId);
+    if (isset($items[$itemIndex]['machining_processes'][$processIndex])) {
+        $process = &$items[$itemIndex]['machining_processes'][$processIndex];
 
-    // If process marked completed, check status of item & order
-    if ($process['status'] === 'Completed') {
-        $all_processes_complete = true;
+        $process['actual_completion'] = sanitize_input($_POST['actual_completion']);
+        $process['status'] = sanitize_input($_POST['process_status']);
+        $process['remarks'] = sanitize_input($_POST['remarks']);
+
+        // Handle document upload
+        if (isset($_FILES['process_document']) && $_FILES['process_document']['error'] === 0) {
+            $uploadResult = handleStageFileUpload($_FILES['process_document'], 0, $orderId, 'machining');
+            if ($uploadResult['success']) {
+                $process['documents'][] = $uploadResult['filename'];
+                $process['original_filenames'][] = $uploadResult['original'];
+            }
+        }
+
+        // Check if all processes are complete
+        $allComplete = true;
         foreach ($items[$itemIndex]['machining_processes'] as $p) {
             if ($p['status'] !== 'Completed') {
-                $all_processes_complete = false;
+                $allComplete = false;
                 break;
             }
         }
 
-        if ($all_processes_complete) {
+        if ($allComplete) {
             $items[$itemIndex]['item_status'] = 'Ready for QC';
+        }
 
-            // Check if all items are ready for QC
-            $all_items_ready_for_qc = true;
+        if (updateOrderItems($orderId, $items)) {
+            $_SESSION['message'] = ['type' => 'success', 'text' => 'Process updated successfully.'];
+            logChange($orderId, 'Machining', "Updated process: {$process['name']} - Status: {$process['status']}", $itemIndex);
+        } else {
+            $_SESSION['message'] = ['type' => 'error', 'text' => 'Failed to update process.'];
+        }
+    } else {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Process not found.'];
+    }
+
+    header('Location: pipeline.php');
+    exit;
+}
+
+// Stage 4: Quality Control
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_inspection_report'])) {
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid security token.'];
+        header('Location: pipeline.php');
+        exit;
+    }
+
+    $orderId = sanitize_input($_POST['order_id']);
+    $itemIndex = (int)$_POST['item_index'];
+
+    $inspectionType = sanitize_input($_POST['inspection_type']);
+    if ($inspectionType === 'other') {
+        $inspectionType = sanitize_input($_POST['inspection_type_other']);
+    }
+
+    $newInspection = [
+        'inspection_id' => uniqid('QC_'),
+        'status' => sanitize_input($_POST['inspection_status']),
+        'type' => $inspectionType,
+        'technician_name' => sanitize_input($_POST['technician_name']),
+        'inspection_date' => sanitize_input($_POST['inspection_date']),
+        'remarks' => sanitize_input($_POST['remarks']),
+        'documents' => [],
+        'original_filenames' => []
+    ];
+
+    // Handle QC document upload
+    if (isset($_FILES['qc_document']) && $_FILES['qc_document']['error'] == 0) {
+        $uploadResult = handleStageFileUpload($_FILES['qc_document'], 0, $orderId, 'inspection');
+        if ($uploadResult['success']) {
+            $newInspection['documents'][] = $uploadResult['filename'];
+            $newInspection['original_filenames'][] = $uploadResult['original'];
+
+            // Update order's inspection reports
+            $order = getOrderById($orderId);
+            $inspectionReports = json_decode($order['inspection_reports'] ?? '[]', true);
+            $inspectionReports[] = $uploadResult['filename'];
+            updateOrder($orderId, ['inspection_reports' => json_encode($inspectionReports)]);
+        }
+    }
+
+    $items = getOrderItems($orderId);
+    if (isset($items[$itemIndex])) {
+        if (!isset($items[$itemIndex]['inspection_data'])) {
+            $items[$itemIndex]['inspection_data'] = [];
+        }
+
+        $items[$itemIndex]['inspection_data'][] = $newInspection;
+
+        // Update item status based on inspection result
+        if ($newInspection['status'] === 'Rework Required') {
+            $items[$itemIndex]['item_status'] = 'In Production';
+            $orderStatus = 'In Production';
+        } elseif ($newInspection['status'] === 'QC Passed') {
+            $items[$itemIndex]['item_status'] = 'QC Completed';
+
+            // Check if all items passed QC
+            $allPassed = true;
             foreach ($items as $item) {
-                if (
-                    !in_array($item['item_status'], [
-                        'Ready for QC',
-                        'QC Completed',
-                        'Packaging',
-                        'Ready for Dispatch',
-                        'Shipped'
-                    ])
-                ) {
-                    $all_items_ready_for_qc = false;
+                $hasPassed = false;
+                if (!empty($item['inspection_data'])) {
+                    foreach ($item['inspection_data'] as $insp) {
+                        if ($insp['status'] === 'QC Passed') {
+                            $hasPassed = true;
+                            break;
+                        }
+                    }
+                }
+                if (!$hasPassed) {
+                    $allPassed = false;
                     break;
                 }
             }
 
-            if ($all_items_ready_for_qc) {
-                $orderStatus = 'Ready for QC';
-            }
+            $orderStatus = $allPassed ? 'QC Completed' : null;
+        }
 
-            $message = "All processes completed by $currentUser. Item ready for QC. Inspection team notified.";
+        if (updateOrderItems($orderId, $items, $orderStatus)) {
+            $_SESSION['message'] = ['type' => 'success', 'text' => 'Inspection report submitted successfully.'];
+            logChange($orderId, 'Quality Control', "QC Result: {$newInspection['status']} - {$newInspection['type']}", $itemIndex);
         } else {
-            $message = "Process marked as completed by $currentUser.";
+            $_SESSION['message'] = ['type' => 'error', 'text' => 'Failed to submit inspection report.'];
+        }
+    } else {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Item not found.'];
+    }
+
+    header('Location: pipeline.php');
+    exit;
+}
+
+// Stage 5: Packaging
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_packaging_lot'])) {
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid security token.'];
+        header('Location: pipeline.php');
+        exit;
+    }
+
+    $orderId = sanitize_input($_POST['order_id']);
+    $itemIndex = (int)$_POST['item_index'];
+
+    // Verify fumigation
+    if (!isset($_POST['fumigation_completed']) || $_POST['fumigation_completed'] != '1') {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Fumigation must be completed before packaging.'];
+        header('Location: pipeline.php');
+        exit;
+    }
+
+    $packagingType = sanitize_input($_POST['packaging_type']);
+    if ($packagingType === 'other') {
+        $packagingType = sanitize_input($_POST['packaging_type_other']);
+    }
+
+    // Handle multiple photo uploads
+    $uploadedPhotos = [];
+    $originalNames = [];
+    if (isset($_FILES['product_photos'])) {
+        foreach ($_FILES['product_photos']['tmp_name'] as $index => $tmpName) {
+            if (!empty($tmpName)) {
+                $uploadResult = handleMultipleFileUpload($_FILES['product_photos'], $index, $orderId, 'packaging');
+                if ($uploadResult['success']) {
+                    $uploadedPhotos[] = $uploadResult['filename'];
+                    $originalNames[] = $uploadResult['original'];
+                }
+            }
         }
     }
 
-    if (updateOrderItems($orderId, $items, $orderStatus)) {
-        setMessageAndRedirect('success', $message);
-    } else {
-        setMessageAndRedirect('error', 'Failed to update machining process in database.');
-    }
-}
-
-// --- STAGE 2: Handle Raw Material Form Submission ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_raw_material'])) {
-    $orderId = sanitize_input($_POST['order_id']);
-    $itemIndex = (int) $_POST['item_index'];
-
-    // Handle the "other" material type option
-    $materialType = sanitize_input($_POST['raw_material_type']);
-    if ($materialType === 'other') {
-        $materialType = sanitize_input($_POST['raw_material_type_other']);
-    }
-
-    $newMaterial = [
-        'type' => $materialType,
-        'grade' => sanitize_input($_POST['raw_material_grade']),
-        'dimensions' => sanitize_input($_POST['raw_material_dimensions']),
-        'vendor' => sanitize_input($_POST['vendor_name']),
-        'purchase_date' => sanitize_input($_POST['purchase_date']),
+    $newLot = [
+        'photos' => $uploadedPhotos,
+        'original_photo_names' => $originalNames,
+        'products_in_lot' => sanitize_input($_POST['products_in_lot']),
+        'docs_included' => isset($_POST['docs_included']) ? 'Yes' : 'No',
+        'packaging_type' => $packagingType,
+        'packaging_date' => sanitize_input($_POST['packaging_date']),
+        'num_packages' => sanitize_input($_POST['num_packages']),
+        'weight_per_package' => sanitize_input($_POST['weight_per_package']),
+        'dimensions_per_package' => sanitize_input($_POST['dimensions_per_package']),
+        'net_weight' => sanitize_input($_POST['net_weight']),
+        'gross_weight' => sanitize_input($_POST['gross_weight']),
+        'fumigation_completed' => 'Yes',
+        'fumigation_certificate_number' => sanitize_input($_POST['fumigation_certificate_number']),
+        'fumigation_date' => sanitize_input($_POST['fumigation_date']),
+        'fumigation_agency' => sanitize_input($_POST['fumigation_agency'])
     ];
 
     $items = getOrderItems($orderId);
+    if (isset($items[$itemIndex])) {
+        if (!isset($items[$itemIndex]['packaging_lots'])) {
+            $items[$itemIndex]['packaging_lots'] = [];
+        }
 
-    if (!isset($items[$itemIndex]['raw_materials'])) {
-        $items[$itemIndex]['raw_materials'] = [];
-    }
+        $items[$itemIndex]['packaging_lots'][] = $newLot;
+        $items[$itemIndex]['item_status'] = 'Packaging';
 
-    $items[$itemIndex]['raw_materials'][] = $newMaterial;
-    $items[$itemIndex]['item_status'] = 'Sourcing Material';
-
-    // Update order status if not already in advanced state
-    $orderStatus = null;
-    $currentOrder = getOrderById($orderId);
-    $advancedStatuses = [
-        'Sourcing Material',
-        'In Production',
-        'Ready for QC',
-        'QC Completed',
-        'Packaging',
-        'Ready for Dispatch',
-        'Shipped'
-    ];
-    if ($currentOrder && !in_array($currentOrder['status'], $advancedStatuses)) {
-        $orderStatus = 'Sourcing Material';
-    }
-
-    if (updateOrderItems($orderId, $items, $orderStatus)) {
-        logChange($orderId, 'Raw Materials', "User '$currentUser' ($userRole) added raw material: {$newMaterial['type']} - {$newMaterial['grade']}", $itemIndex);
-        setMessageAndRedirect('success', "Raw material added by $currentUser. Production team notified.");
-    } else {
-        setMessageAndRedirect('error', 'Failed to add raw material to database.');
-    }
-}
-
-// --- Handle Global Status Updates ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
-    $orderId = sanitize_input($_POST['order_id']);
-    $newStatus = sanitize_input($_POST['new_status']);
-
-    global $STANDARD_STATUSES;
-
-    if (!empty($orderId) && in_array($newStatus, $STANDARD_STATUSES)) {
-        $currentOrder = getOrderById($orderId);
-        $oldStatus = $currentOrder['status'] ?? 'Unknown';
-
-        if (updateOrder($orderId, ['status' => $newStatus])) {
-            // Enhanced logging with user details
-            $changeDescription = "User '$currentUser' ($userRole) changed ORDER STATUS from '$oldStatus' to '$newStatus'";
-            logChange($orderId, 'Order Status Update', $changeDescription);
-            
-            // Additional activity log
-            logActivity('Order Status Change', "Order #$orderId status changed from '$oldStatus' to '$newStatus'");
-            
-            setMessageAndRedirect('success', "Order #$orderId status updated to $newStatus by $currentUser.");
+        if (updateOrderItems($orderId, $items, 'Packaging')) {
+            $lotNumber = count($items[$itemIndex]['packaging_lots']);
+            $_SESSION['message'] = ['type' => 'success', 'text' => "Packaging lot #$lotNumber added successfully."];
+            logChange($orderId, 'Packaging', "Added lot #$lotNumber: {$newLot['products_in_lot']} products", $itemIndex);
         } else {
-            setMessageAndRedirect('error', 'Failed to update order status in database.');
+            $_SESSION['message'] = ['type' => 'error', 'text' => 'Failed to create packaging lot.'];
         }
     } else {
-        setMessageAndRedirect('error', 'Invalid status update request.');
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Item not found.'];
     }
+
+    header('Location: pipeline.php');
+    exit;
 }
 
-// --- Get data for display ---
-$orders = getOrders();
+// Stage 6: Shipping Documents
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_shipping_documents'])) {
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid security token.'];
+        header('Location: pipeline.php');
+        exit;
+    }
+
+    $orderId = sanitize_input($_POST['order_id']);
+    $itemIndex = (int)$_POST['item_index'];
+    $lotIndex = (int)$_POST['lot_index'];
+
+    $items = getOrderItems($orderId);
+    if (isset($items[$itemIndex]['packaging_lots'][$lotIndex])) {
+        $uploadedDocs = [];
+        $originalNames = [];
+
+        if (isset($_FILES['shipping_docs'])) {
+            foreach ($_FILES['shipping_docs']['tmp_name'] as $index => $tmpName) {
+                if (!empty($tmpName)) {
+                    $uploadResult = handleMultipleFileUpload($_FILES['shipping_docs'], $index, $orderId, 'shipping');
+                    if ($uploadResult['success']) {
+                        $uploadedDocs[] = $uploadResult['filename'];
+                        $originalNames[] = $uploadResult['original'];
+                    }
+                }
+            }
+        }
+
+        if (!empty($uploadedDocs)) {
+            $items[$itemIndex]['packaging_lots'][$lotIndex]['shipping_documents'] = $uploadedDocs;
+            $items[$itemIndex]['packaging_lots'][$lotIndex]['shipping_original_filenames'] = $originalNames;
+            $items[$itemIndex]['item_status'] = 'Ready for Dispatch';
+
+            if (updateOrderItems($orderId, $items, 'Ready for Dispatch')) {
+                $_SESSION['message'] = ['type' => 'success', 'text' => 'Shipping documents uploaded successfully.'];
+                logChange($orderId, 'Shipping Documents', 'Uploaded shipping documents for Lot #' . ($lotIndex + 1), $itemIndex);
+            } else {
+                $_SESSION['message'] = ['type' => 'error', 'text' => 'Failed to upload shipping documents.'];
+            }
+        } else {
+            $_SESSION['message'] = ['type' => 'error', 'text' => 'No valid documents uploaded.'];
+        }
+    } else {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Packaging lot not found.'];
+    }
+
+    header('Location: pipeline.php');
+    exit;
+}
+
+// Stage 7: Dispatch
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_dispatch_details'])) {
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid security token.'];
+        header('Location: pipeline.php');
+        exit;
+    }
+
+    $orderId = sanitize_input($_POST['order_id']);
+    $itemIndex = (int)$_POST['item_index'];
+    $lotIndex = (int)$_POST['lot_index'];
+
+    $items = getOrderItems($orderId);
+    if (isset($items[$itemIndex]['packaging_lots'][$lotIndex])) {
+        $lot = &$items[$itemIndex]['packaging_lots'][$lotIndex];
+
+        $lot['dispatch_status'] = 'Shipped';
+        $lot['dispatch_date'] = sanitize_input($_POST['dispatch_date']);
+        $lot['transport_mode'] = sanitize_input($_POST['transport_mode']);
+        $lot['tracking_number'] = sanitize_input($_POST['tracking_number']);
+        $lot['dispatch_remarks'] = sanitize_input($_POST['dispatch_remarks']);
+
+        // Check if all lots are shipped
+        $allShipped = true;
+        foreach ($items as $item) {
+            if (isset($item['packaging_lots'])) {
+                foreach ($item['packaging_lots'] as $checkLot) {
+                    if (($checkLot['dispatch_status'] ?? '') !== 'Shipped') {
+                        $allShipped = false;
+                        break 2;
+                    }
+                }
+            }
+        }
+
+        if ($allShipped) {
+            $items[$itemIndex]['item_status'] = 'Shipped';
+            $orderStatus = 'Shipped';
+        } else {
+            $orderStatus = null;
+        }
+
+        if (updateOrderItems($orderId, $items, $orderStatus)) {
+            $_SESSION['message'] = ['type' => 'success', 'text' => 'Dispatch details updated successfully.'];
+            logChange($orderId, 'Dispatch', "Shipped via {$lot['transport_mode']} - Tracking: {$lot['tracking_number']}", $itemIndex);
+
+            // Send shipping notification
+            if ($orderStatus === 'Shipped') {
+                $order = getOrderById($orderId);
+                sendShippingNotification($order['customer_id'], $orderId, $lot['tracking_number']);
+            }
+        } else {
+            $_SESSION['message'] = ['type' => 'error', 'text' => 'Failed to update dispatch details.'];
+        }
+    } else {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Packaging lot not found.'];
+    }
+
+    header('Location: pipeline.php');
+    exit;
+}
+
+// ==========================================
+// DATA FETCHING FOR DISPLAY
+// ==========================================
+
+// Get data for display
+$orders = getOrders(); // Get all orders for pipeline view
 $customers = getCustomers();
 $customerMap = array_column($customers, 'name', 'id');
 
-// --- Prepare data for dashboard ---
-// Ensure $STANDARD_STATUSES is properly defined and accessible
-if (!isset($STANDARD_STATUSES) || !is_array($STANDARD_STATUSES)) {
-    $STANDARD_STATUSES = [
-        'Pending',
-        'Sourcing Material',
-        'In Production',
-        'Ready for QC',
-        'QC Completed',
-        'Packaging',
-        'Ready for Dispatch',
-        'Shipped'
-    ];
-}
-
-// Initialize status counts
+// Calculate statistics
 $statusCounts = array_fill_keys($STANDARD_STATUSES, 0);
 $statusCounts['Total'] = count($orders);
 
@@ -845,32 +1502,24 @@ foreach ($orders as $order) {
     }
 }
 
-if (isset($_SESSION['order_created'])) {
-    echo '<div id="toast-notification" class="toast toast-success">Order Created Successfully!</div>';
-    unset($_SESSION['order_created']);
-}
+// Generate CSRF token
+$csrfToken = generateCsrfToken();
 
-if (isset($_SESSION['message'])) {
-    $message_type = $_SESSION['message']['type'];
-    $message_class = $message_type === 'success' ? 'toast-success' : 'toast-error';
-    echo "<div class='toast {$message_class}'>{$_SESSION['message']['text']}</div>";
-    unset($_SESSION['message']);
-}
 ?>
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Order Pipeline - Alphasonix CRM</title>
-    
+    <title>Production Pipeline - Alphasonix CRM</title>
+
     <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    
+
     <!-- Bootstrap Icons -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
-    
-    <!-- Custom CSS -->
+
     <style>
         :root {
             --bs-primary: #0d6efd;
@@ -904,73 +1553,182 @@ if (isset($_SESSION['message'])) {
             align-items: center;
         }
         
+        /* Updated Dashboard Styles */
         .dashboard {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-            gap: 1rem;
-            margin-bottom: 1.5rem;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
         }
-        
+
         .stat-card {
             background: white;
-            padding: 1.25rem;
-            border-radius: 0.5rem;
-            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
-            text-align:            center;
-            transition: transform 0.2s;
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            transition: all 0.3s ease;
+            border: none;
+            position: relative;
+            overflow: hidden;
+            aspect-ratio: 1/1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
         }
-        
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: var(--card-color, #6c757d);
+        }
+
         .stat-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 0.25rem 0.5rem rgba(0, 0, 0, 0.1);
+            transform: translateY(-5px);
+            box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1), 0 4px 6px rgba(0, 0, 0, 0.05);
         }
-        
+
         .stat-card-total {
-            border-left: 4px solid var(--bs-primary);
+            --card-color: var(--bs-primary);
         }
-        
+
         .stat-card-pending {
-            border-left: 4px solid var(--bs-secondary);
+            --card-color: var(--bs-secondary);
         }
-        
+
         .stat-card-sourcing-material {
-            border-left: 4px solid var(--bs-warning);
+            --card-color: var(--bs-warning);
         }
-        
+
         .stat-card-in-production {
-            border-left: 4px solid var(--bs-info);
+            --card-color: var(--bs-info);
         }
-        
+
         .stat-card-ready-for-qc {
-            border-left: 4px solid #6f42c1;
+            --card-color: #6f42c1;
         }
-        
+
         .stat-card-qc-completed {
-            border-left: 4px solid #20c997;
+            --card-color: #20c997;
         }
-        
+
         .stat-card-packaging {
-            border-left: 4px solid #fd7e14;
+            --card-color: #fd7e14;
         }
-        
+
         .stat-card-ready-for-dispatch {
-            border-left: 4px solid #0dcaf0;
+            --card-color: #0dcaf0;
         }
-        
+
         .stat-card-shipped {
-            border-left: 4px solid var(--bs-success);
+            --card-color: var(--bs-success);
         }
-        
+
         .stat-card .count {
             display: block;
-            font-size: 1.75rem;
-            font-weight: 600;
-            margin-bottom: 0.25rem;
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            color: var(--card-color, #212529);
+            line-height: 1;
         }
-        
+
         .stat-card .label {
-            font-size: 0.875rem;
+            font-size: 0.9rem;
             color: var(--bs-secondary);
+            font-weight: 500;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Icon styling for dashboard cards */
+        .stat-card::after {
+            content: '';
+            font-family: 'Bootstrap Icons';
+            font-size: 1.5rem;
+            color: rgba(0, 0, 0, 0.1);
+            position: absolute;
+            bottom: 10px;
+            right: 15px;
+            opacity: 0.7;
+        }
+
+        .stat-card-total::after {
+            content: '\F479'; /* bi-clipboard-data */
+        }
+
+        .stat-card-pending::after {
+            content: '\F28A'; /* bi-clock */
+        }
+
+        .stat-card-sourcing-material::after {
+            content: '\F1C3'; /* bi-box-seam */
+        }
+
+        .stat-card-in-production::after {
+            content: '\F3B1'; /* bi-gear */
+        }
+
+        .stat-card-ready-for-qc::after {
+            content: '\F272'; /* bi-clipboard-check */
+        }
+
+        .stat-card-qc-completed::after {
+            content: '\F26A'; /* bi-check-circle */
+        }
+
+        .stat-card-packaging::after {
+            content: '\F5CB'; /* bi-box */
+        }
+
+        .stat-card-ready-for-dispatch::after {
+            content: '\F21E'; /* bi-truck */
+        }
+
+        .stat-card-shipped::after {
+            content: '\F633'; /* bi-check-lg */
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 1200px) {
+            .dashboard {
+                grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            }
+            
+            .stat-card .count {
+                font-size: 2.25rem;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .dashboard {
+                grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+                gap: 1rem;
+            }
+            
+            .stat-card {
+                padding: 1.25rem;
+            }
+            
+            .stat-card .count {
+                font-size: 2rem;
+            }
+            
+            .stat-card .label {
+                font-size: 0.85rem;
+            }
+        }
+
+        @media (max-width: 576px) {
+            .dashboard {
+                grid-template-columns: repeat(2, 1fr);
+            }
         }
         
         .filter-controls {
@@ -1548,6 +2306,7 @@ if (isset($_SESSION['message'])) {
         }
     </style>
 </head>
+
 <body>
     <?php include 'sidebar.php'; ?>
 
@@ -1559,8 +2318,21 @@ if (isset($_SESSION['message'])) {
                 <h2 class="mb-0"><i class="bi bi-diagram-3"></i> Order Pipeline Process</h2>
                 <div class="d-flex gap-2">
                     <a href="orders.php" class="btn btn-primary no-print"><i class="bi bi-plus-circle"></i> Create New Order</a>
+                    <a href="print_order.php?order_id=<?= htmlspecialchars($order['order_id'] ?? '') ?>" target="_blank" class="btn btn-primary no-print">
+                        <i class="bi bi-printer"></i> Print Invoice
+                    </a>
                 </div>
             </div>
+
+            <!-- Show Messages -->
+            <?php if (isset($_SESSION['message'])): ?>
+                <?php
+                $messageType = $_SESSION['message']['type'];
+                $messageClass = $messageType === 'success' ? 'toast-success' : 'toast-error';
+                echo "<div class='toast {$messageClass}'>{$_SESSION['message']['text']}</div>";
+                unset($_SESSION['message']);
+                ?>
+            <?php endif; ?>
 
             <!-- Kanban Dashboard -->
             <div class="dashboard no-print">
@@ -1568,7 +2340,7 @@ if (isset($_SESSION['message'])) {
                     <span class="count"><?= $statusCounts['Total'] ?? 0 ?></span>
                     <span class="label">Total Orders</span>
                 </div>
-                <?php foreach ($STANDARD_STATUSES as $status): 
+                <?php foreach ($STANDARD_STATUSES as $status):
                     $statusClass = 'stat-card-' . strtolower(str_replace(' ', '-', $status));
                 ?>
                     <div class="stat-card <?= $statusClass ?>">
@@ -1606,13 +2378,13 @@ if (isset($_SESSION['message'])) {
                     </div>
                 <?php else: ?>
                     <?php foreach (array_reverse($orders) as $order):
-                        // Deadline calculation logic
+                        // Deadline calculation
                         $deadline_class = '';
                         $days_remaining_text = '';
-                        if (!empty($order['delivery_date']) && $order['status'] !== 'Shipped') {
-                            $delivery_date = new DateTime($order['delivery_date']);
+                        if (!empty($order['due_date']) && $order['status'] !== 'Shipped') {
+                            $due_date = new DateTime($order['due_date']);
                             $today = new DateTime();
-                            $interval = $today->diff($delivery_date);
+                            $interval = $today->diff($due_date);
                             $days_remaining = (int) $interval->format('%r%a');
 
                             if ($days_remaining < 0) {
@@ -1625,7 +2397,7 @@ if (isset($_SESSION['message'])) {
                                 $days_remaining_text = "<div class='deadline-indicator'><i class='bi bi-calendar-event'></i> {$days_remaining} days remaining</div>";
                             }
                         }
-                        ?>
+                    ?>
                         <div class="order-card <?= $deadline_class ?>" data-status="<?= htmlspecialchars($order['status'] ?? 'Pending') ?>"
                             data-customer-id="<?= htmlspecialchars($order['customer_id']) ?>">
                             <div class="order-content">
@@ -1643,12 +2415,12 @@ if (isset($_SESSION['message'])) {
                                         </div>
                                         <div class="order-info-item">
                                             <span class="order-info-label">PO Date:</span>
-                                            <span class="order-info-value"><?= htmlspecialchars($order['po_date']) ?></span>
+                                            <span class="order-info-value"><?= date('M j, Y', strtotime($order['po_date'])) ?></span>
                                         </div>
                                         <?php if (!empty($order['delivery_date'])): ?>
                                             <div class="order-info-item">
                                                 <span class="order-info-label">Delivery:</span>
-                                                <span class="order-info-value"><?= htmlspecialchars($order['delivery_date']) ?></span>
+                                                <span class="order-info-value"><?= date('M j, Y', strtotime($order['delivery_date'])) ?></span>
                                             </div>
                                         <?php endif; ?>
                                     </div>
@@ -1657,13 +2429,7 @@ if (isset($_SESSION['message'])) {
 
                                     <!-- Buttons -->
                                     <div class="no-print mt-3 d-flex flex-column gap-2">
-                                        <a href="print_order.php?order_id=<?= htmlspecialchars($order['order_id']) ?>" target="_blank" class="btn btn-primary text-center">
-                                            <i class="bi bi-printer"></i> Print Order
-                                        </a>
-                                        <!-- <a href="invoice.php?order_id=<?= htmlspecialchars($order['order_id']) ?>" class="btn btn-secondary text-center">
-                                            <i class="bi bi-receipt"></i> Print Invoice
-                                        </a> -->
-                                        <a href="order-stages-view.php?order_id=<?= htmlspecialchars($order['order_id']) ?>"
+                                        <a href="order-stages-view.php?id=<?= urlencode($order['order_id']) ?>"
                                             class="btn btn-primary text-center">
                                             <i class="bi bi-graph-up"></i> View All Stages
                                         </a>
@@ -1678,776 +2444,191 @@ if (isset($_SESSION['message'])) {
                                 <div class="workflow-section">
                                     <?php
                                     $items = getOrderItems($order['order_id']);
-                                    if (is_array($items))
-                                        foreach ($items as $itemIndex => $item):
-                                            ?>
-                                            <div class="item-card">
-                                                <!-- Item Header (Collapsible) -->
-                                                <div class="item-header">
-                                                    <h4 class="item-title"><span
-                                                            class="toggle-icon"><i class="bi bi-caret-right-fill"></i></span><?= htmlspecialchars($item['Name'] ?? 'N/A') ?></h4>
-                                                    <div class="d-flex gap-2 align-items-center">
-                                                        <div class="item-quantity">Qty: <?= htmlspecialchars($item['quantity']) ?></div>
-                                                        <form action="pipeline.php" method="post" class="m-0"
-                                                            onsubmit="return confirm('Delete this item from the order?');" class="no-print">
-                                                            <input type="hidden" name="order_id"
-                                                                value="<?= htmlspecialchars($order['order_id']) ?>">
-                                                            <input type="hidden" name="item_index" value="<?= $itemIndex ?>">
-                                                            <button type="submit" name="delete_item" class="btn btn-danger btn-small no-print"
-                                                                title="Delete this item"><i class="bi bi-trash"></i></button>
-                                                        </form>
-                                                    </div>
+                                    foreach ($items as $itemIndex => $item):
+                                    ?>
+                                        <div class="item-card">
+                                            <!-- Item Header -->
+                                            <div class="item-header">
+                                                <h4 class="item-title">
+                                                    <span class="toggle-icon"><i class="bi bi-caret-right-fill"></i></span>
+                                                    <?= htmlspecialchars($item['Name'] ?? 'N/A') ?>
+                                                </h4>
+                                                <div class="d-flex gap-2 align-items-center">
+                                                    <div class="item-quantity">Qty: <?= htmlspecialchars($item['quantity']) ?></div>
+                                                    <form action="pipeline.php" method="post" class="m-0 no-print"
+                                                        onsubmit="return confirm('Delete this item from the order?');">
+                                                        <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                                                        <input type="hidden" name="order_id" value="<?= htmlspecialchars($order['order_id']) ?>">
+                                                        <input type="hidden" name="item_index" value="<?= $itemIndex ?>">
+                                                        <button type="submit" name="delete_item" class="btn btn-danger btn-small"
+                                                            title="Delete this item"><i class="bi bi-trash"></i></button>
+                                                    </form>
                                                 </div>
+                                            </div>
 
-                                                <!-- Item Body (Collapsible) -->
-                                                <div class="item-body">
-                                                    <?php if (!empty($item['Dimensions']) || !empty($item['Description'])): ?>
-                                                        <div class="mb-3 p-2 bg-light rounded">
-                                                            <?php if (!empty($item['Dimensions'])): ?>
-                                                                <div><strong>Dimensions:</strong> <?= htmlspecialchars($item['Dimensions']) ?></div>
-                                                            <?php endif; ?>
-                                                            <?php if (!empty($item['Description'])): ?>
-                                                                <div><strong>Description:</strong> <?= htmlspecialchars($item['Description']) ?></div>
-                                                            <?php endif; ?>
-                                                        </div>
-                                                    <?php endif; ?>
+                                            <!-- Item Body -->
+                                            <div class="item-body">
+                                                <?php if (!empty($item['Dimensions']) || !empty($item['Description'])): ?>
+                                                    <div class="mb-3 p-2 bg-light rounded">
+                                                        <?php if (!empty($item['Dimensions'])): ?>
+                                                            <div><strong>Dimensions:</strong> <?= htmlspecialchars($item['Dimensions']) ?></div>
+                                                        <?php endif; ?>
+                                                        <?php if (!empty($item['Description'])): ?>
+                                                            <div><strong>Description:</strong> <?= htmlspecialchars($item['Description']) ?></div>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                <?php endif; ?>
 
-                                                    <!-- Enhanced Item Drawing Section -->
-                                                    <div class="mb-3">
-                                                        <?php if (!empty($item['drawing_filename'])): ?>
-                                                            <div class="drawing-preview">
-                                                                <h5 class="mt-0"><i class="bi bi-file-earmark"></i> Product Drawing</h5>
-
-                                                                <!-- File information display -->
-                                                                <div class="file-info-display">
-                                                                    <div class="d-flex align-items-center gap-2">
-                                                                        <?php
-                                                                        $fileExt = strtolower(pathinfo($item['drawing_filename'], PATHINFO_EXTENSION));
-                                                                        $fileIcon = 'bi-file-earmark-text';
-                                                                        if (in_array($fileExt, ['jpg', 'jpeg', 'png', 'gif'])) {
-                                                                            $fileIcon = 'bi-file-image';
-                                                                        } elseif ($fileExt === 'pdf') {
-                                                                            $fileIcon = 'bi-file-earmark-pdf';
-                                                                        } elseif ($fileExt === 'dwg') {
-                                                                            $fileIcon = 'bi-pencil-square';
-                                                                        }
-                                                                        ?>
-                                                                        <i class="bi <?= $fileIcon ?>" style="font-size: 1.5rem;"></i>
-                                                                        <div class="flex-grow-1">
-                                                                            <div class="fw-semibold text-primary">
-                                                                                <?= htmlspecialchars($item['original_filename'] ?? $item['drawing_filename']) ?>
-                                                                            </div>
-                                                                            <div class="small text-muted">
-                                                                                Order #<?= htmlspecialchars($order['order_id']) ?> -
-                                                                                <?php if (file_exists(__DIR__ . '/uploads/drawings/' . $item['drawing_filename'])): ?>
-                                                                                    <?= date('M j, Y', filemtime(__DIR__ . '/uploads/drawings/' . $item['drawing_filename'])) ?>
-                                                                                <?php else: ?>
-                                                                                    File not found
-                                                                                <?php endif; ?>
-                                                                            </div>
+                                                <!-- Item Drawing Section -->
+                                                <div class="mb-3">
+                                                    <?php if (!empty($item['drawing_filename'])): ?>
+                                                        <div class="drawing-preview">
+                                                            <h5 class="mt-0"><i class="bi bi-file-earmark"></i> Product Drawing</h5>
+                                                            <div class="file-info-display">
+                                                                <div class="d-flex align-items-center gap-2">
+                                                                    <?php
+                                                                    $fileExt = strtolower(pathinfo($item['drawing_filename'], PATHINFO_EXTENSION));
+                                                                    $fileIcon = 'bi-file-earmark-text';
+                                                                    if (in_array($fileExt, ['jpg', 'jpeg', 'png', 'gif'])) {
+                                                                        $fileIcon = 'bi-file-image';
+                                                                    } elseif ($fileExt === 'pdf') {
+                                                                        $fileIcon = 'bi-file-earmark-pdf';
+                                                                    }
+                                                                    ?>
+                                                                    <i class="bi <?= $fileIcon ?>" style="font-size: 1.5rem;"></i>
+                                                                    <div class="flex-grow-1">
+                                                                        <div class="fw-semibold text-primary">
+                                                                            <?= htmlspecialchars($item['original_filename'] ?? $item['drawing_filename']) ?>
+                                                                        </div>
+                                                                        <div class="small text-muted">
+                                                                            Order #<?= htmlspecialchars($order['order_id']) ?>
                                                                         </div>
                                                                     </div>
                                                                 </div>
+                                                            </div>
 
-                                                                <!-- File preview for images -->
-                                                                <?php if (in_array($fileExt, ['jpg', 'jpeg', 'png', 'gif']) && file_exists(__DIR__ . '/uploads/drawings/' . $item['drawing_filename'])): ?>
-                                                                    <img src="uploads/drawings/<?= htmlspecialchars($item['drawing_filename']) ?>"
-                                                                        alt="Drawing Preview"
-                                                                        class="preview-drawing mt-2 img-thumbnail cursor-pointer"
-                                                                        style="max-width: 200px; max-height: 150px;"
-                                                                        data-src="uploads/drawings/<?= htmlspecialchars($item['drawing_filename']) ?>"
-                                                                        onclick="showDrawingModal(this)">
+                                                            <div class="mt-2 d-flex gap-2 no-print">
+                                                                <?php if (in_array($fileExt, ['jpg', 'jpeg', 'png', 'gif', 'pdf'])): ?>
+                                                                    <a href="uploads/drawings/<?= htmlspecialchars($item['drawing_filename']) ?>"
+                                                                        target="_blank" class="btn btn-small btn-primary">
+                                                                        <i class="bi bi-eye"></i> View
+                                                                    </a>
                                                                 <?php endif; ?>
+                                                                <button type="button" class="btn btn-small btn-warning"
+                                                                    onclick="showDrawingForm('drawing-form-<?= $order['order_id'] ?>-<?= $itemIndex ?>')">
+                                                                    <i class="bi bi-arrow-repeat"></i> Replace
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    <?php else: ?>
+                                                        <div class="no-drawing-placeholder text-center">
+                                                            <div class="mb-2"><i class="bi bi-file-earmark" style="font-size: 2rem;"></i></div>
+                                                            <p class="text-muted m-0 mb-3">No drawing uploaded for this item</p>
+                                                            <button type="button" class="btn btn-primary"
+                                                                onclick="showDrawingForm('drawing-form-<?= $order['order_id'] ?>-<?= $itemIndex ?>')">
+                                                                <i class="bi bi-cloud-upload"></i> Upload Drawing
+                                                            </button>
+                                                        </div>
+                                                    <?php endif; ?>
 
-                                                                <div class="mt-2 d-flex gap-2 no-print">
-                                                                    <!-- View Button (for supported formats) -->
-                                                                    <?php if (in_array($fileExt, ['jpg', 'jpeg', 'png', 'gif', 'pdf'])): ?>
-                                                                        <a href="uploads/drawings/<?= htmlspecialchars($item['drawing_filename']) ?>"
-                                                                            target="_blank" class="btn btn-small btn-primary">
-                                                                            <i class="bi bi-eye"></i> View
-                                                                        </a>
-                                                                    <?php endif; ?>
-
-                                                                    <!-- Replace Button -->
-                                                                    <button type="button" class="btn btn-small btn-warning"
-                                                                        onclick="showDrawingForm('drawing-form-<?= $order['order_id'] ?>-<?= $itemIndex ?>')">
-                                                                        <i class="bi bi-arrow-repeat"></i> Replace
-                                                                    </button>
+                                                    <!-- Drawing Upload Form -->
+                                                    <div id="drawing-form-<?= $order['order_id'] ?>-<?= $itemIndex ?>"
+                                                        class="drawing-upload-form no-print" style="display: none;">
+                                                        <form action="pipeline.php" method="post" enctype="multipart/form-data">
+                                                            <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                                                            <input type="hidden" name="order_id" value="<?= htmlspecialchars($order['order_id']) ?>">
+                                                            <input type="hidden" name="item_index" value="<?= $itemIndex ?>">
+                                                            <div class="mb-3">
+                                                                <label class="form-label fw-semibold">Select New Drawing File:</label>
+                                                                <input type="file" name="item_drawing" accept=".jpg,.jpeg,.png,.pdf,.dwg"
+                                                                    required class="form-control" onchange="previewUploadFile(this)">
+                                                                <div class="form-text">
+                                                                    Supported formats: JPG, PNG, PDF, DWG (Max 10MB)
                                                                 </div>
                                                             </div>
-                                                        <?php else: ?>
-                                                            <div class="no-drawing-placeholder text-center">
-                                                                <div class="mb-2"><i class="bi bi-file-earmark" style="font-size: 2rem;"></i></div>
-                                                                <p class="text-muted m-0 mb-3">No drawing uploaded for this item</p>
-                                                                <button type="button" class="btn btn-primary"
-                                                                    onclick="showDrawingForm('drawing-form-<?= $order['order_id'] ?>-<?= $itemIndex ?>')">
+                                                            <div class="upload-preview" style="display: none;">
+                                                                <div class="d-flex align-items-center gap-2">
+                                                                    <i class="bi bi-file-earmark-text"></i>
+                                                                    <div class="flex-grow-1">
+                                                                        <div class="preview-name fw-semibold"></div>
+                                                                        <div class="preview-size small text-muted"></div>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                            <div class="d-flex gap-2 justify-content-end">
+                                                                <button type="button" class="btn btn-reset"
+                                                                    onclick="hideDrawingForm('drawing-form-<?= $order['order_id'] ?>-<?= $itemIndex ?>')">
+                                                                    <i class="bi bi-x-circle"></i> Cancel
+                                                                </button>
+                                                                <button type="submit" name="update_item_drawing" class="btn btn-primary">
                                                                     <i class="bi bi-cloud-upload"></i> Upload Drawing
                                                                 </button>
                                                             </div>
-                                                        <?php endif; ?>
-
-                                                        <!-- Enhanced Drawing Upload Form -->
-                                                        <div id="drawing-form-<?= $order['order_id'] ?>-<?= $itemIndex ?>"
-                                                            class="drawing-upload-form no-print" style="display: none;">
-                                                            <form action="pipeline.php" method="post" enctype="multipart/form-data">
-                                                                <input type="hidden" name="order_id"
-                                                                    value="<?= htmlspecialchars($order['order_id']) ?>">
-                                                                <input type="hidden" name="item_index" value="<?= $itemIndex ?>">
-                                                                <div class="mb-3">
-                                                                    <label class="form-label fw-semibold">Select New Drawing File:</label>
-                                                                    <input type="file" name="item_drawing" accept=".jpg,.jpeg,.png,.pdf,.dwg"
-                                                                        required class="form-control" onchange="previewUploadFile(this)">
-                                                                    <div class="form-text">
-                                                                        Supported formats: JPG, PNG, PDF, DWG (Max 10MB)
-                                                                    </div>
-                                                                </div>
-
-                                                                <!-- File preview for upload -->
-                                                                <div class="upload-preview" style="display: none;">
-                                                                    <div class="d-flex align-items-center gap-2">
-                                                                        <i class="bi bi-file-earmark-text"></i>
-                                                                        <div class="flex-grow-1">
-                                                                            <div class="preview-name fw-semibold"></div>
-                                                                            <div class="preview-size small text-muted"></div>
-                                                                        </div>
-                                                                    </div>
-                                                                </div>
-
-                                                                <div class="d-flex gap-2 justify-content-end">
-                                                                    <button type="button" class="btn btn-reset"
-                                                                        onclick="hideDrawingForm('drawing-form-<?= $order['order_id'] ?>-<?= $itemIndex ?>')">
-                                                                        <i class="bi bi-x-circle"></i> Cancel
-                                                                    </button>
-                                                                    <button type="submit" name="update_item_drawing" class="btn btn-primary">
-                                                                        <i class="bi bi-cloud-upload"></i> Upload Drawing
-                                                                    </button>
-                                                                </div>
-                                                            </form>
-                                                        </div>
-                                                    </div>
-
-                                                    <!-- Item Status Control -->
-                                                    <div class="no-print mb-4">
-                                                        <span
-                                                            class="item-status-badge item-status-<?= strtolower(str_replace(' ', '-', $item['item_status'] ?? 'pending')) ?>">
-                                                            <?= htmlspecialchars($item['item_status'] ?? 'Pending') ?>
-                                                        </span>
-                                                        <form action="pipeline.php" method="post"
-                                                            class="d-inline-flex gap-2 align-items-center ms-3">
-                                                            <input type="hidden" name="order_id"
-                                                                value="<?= htmlspecialchars($order['order_id']) ?>">
-                                                            <input type="hidden" name="item_index" value="<?= $itemIndex ?>">
-                                                            <select name="new_item_status" class="form-select" style="min-width: 180px;">
-                                                                <?php foreach ($STANDARD_STATUSES as $status): ?>
-                                                                    <option value="<?= $status ?>" <?= ($item['item_status'] ?? 'Pending') == $status ? 'selected' : '' ?>><?= $status ?></option>
-                                                                <?php endforeach; ?>
-                                                            </select>
-                                                            <button type="submit" name="update_item_status"
-                                                                class="btn btn-primary btn-small">Update</button>
                                                         </form>
-                                                        <button type="button" class="btn btn-reset btn-small ms-2" onclick="resetAllItemForms(this)"
-                                                            title="Reset ALL forms for this item"><i class="bi bi-arrow-repeat"></i> Reset Forms</button>
                                                     </div>
+                                                </div>
 
-                                                    <!-- Stage 2: Raw Materials -->
-                                                    <?php if (!empty($item['raw_materials']) || (($order['status'] ?? '') === 'Sourcing Material' || ($item['item_status'] ?? '') === 'Sourcing Material' || ($item['item_status'] ?? '') === 'Pending')): ?>
-                                                        <div class="stage-section">
-                                                            <div class="stage-header">
-                                                                <span><i class="bi bi-tools"></i> Stage 2: Raw Materials Sourcing</span>
-                                                                <small>Person in charge: Procurement Head</small>
-                                                            </div>
-                                                            <div class="stage-content">
-                                                                                                                                <?php if (!empty($item['raw_materials'])): ?>
-                                                                    <table class="data-table">
-                                                                        <thead>
-                                                                            <tr>
-                                                                                <th>Type</th>
-                                                                                <th>Grade</th>
-                                                                                <th>Dimensions</th>
-                                                                                <th>Vendor</th>
-                                                                                <th>Date</th>
-                                                                            </tr>
-                                                                        </thead>
-                                                                        <tbody>
-                                                                            <?php foreach ($item['raw_materials'] as $mat): ?>
-                                                                                <tr>
-                                                                                    <td><?= htmlspecialchars($mat['type']) ?></td>
-                                                                                    <td><?= htmlspecialchars($mat['grade']) ?></td>
-                                                                                    <td><?= htmlspecialchars($mat['dimensions']) ?></td>
-                                                                                    <td><?= htmlspecialchars($mat['vendor']) ?></td>
-                                                                                    <td><?= htmlspecialchars($mat['purchase_date']) ?></td>
-                                                                                </tr>
-                                                                            <?php endforeach; ?>
-                                                                        </tbody>
-                                                                    </table>
-                                                                <?php endif; ?>
+                                                <!-- Item Status Control -->
+                                                <div class="no-print mb-4">
+                                                    <span class="item-status-badge item-status-<?= strtolower(str_replace(' ', '-', $item['item_status'] ?? 'pending')) ?>">
+                                                        <?= htmlspecialchars($item['item_status'] ?? 'Pending') ?>
+                                                    </span>
+                                                    <form action="pipeline.php" method="post" class="d-inline-flex gap-2 align-items-center ms-3">
+                                                        <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                                                        <input type="hidden" name="order_id" value="<?= htmlspecialchars($order['order_id']) ?>">
+                                                        <input type="hidden" name="item_index" value="<?= $itemIndex ?>">
+                                                        <select name="new_item_status" class="form-select" style="min-width: 180px;">
+                                                            <?php foreach ($STANDARD_STATUSES as $status): ?>
+                                                                <option value="<?= $status ?>" <?= ($item['item_status'] ?? 'Pending') == $status ? 'selected' : '' ?>><?= $status ?></option>
+                                                            <?php endforeach; ?>
+                                                        </select>
+                                                        <button type="submit" name="update_item_status" class="btn btn-primary btn-small">Update</button>
+                                                    </form>
+                                                </div>
 
-                                                                <?php if (($order['status'] ?? '') === 'Sourcing Material' || ($order['status'] ?? '') === 'Pending' || ($item['item_status'] ?? '') === 'Sourcing Material' || ($item['item_status'] ?? '') === 'Pending'): ?>
-                                                                    <form action="pipeline.php" method="post" class="stage-form no-print"
-                                                                        id="raw-material-form-<?= $order['order_id'] ?>-<?= $itemIndex ?>">
-                                                                        <input type="hidden" name="order_id"
-                                                                            value="<?= htmlspecialchars($order['order_id']) ?>">
-                                                                        <input type="hidden" name="item_index" value="<?= $itemIndex ?>">
-                                                                        <input type="hidden" name="submission_timestamp" value="<?= date('Y-m-d H:i:s') ?>">
-                                                                        <div class="form-grid">
-                                                                            <div class="form-group">
-                                                                                <select name="raw_material_type" class="form-select"
-                                                                                    onchange="toggleOtherField(this, 'raw_material_type')" required>
-                                                                                    <option value="">-- Select Material Type --</option>
-                                                                                    <option value="Plate">Plate</option>
-                                                                                    <option value="Bar">Bar</option>
-                                                                                    <option value="Pipe">Pipe</option>
-                                                                                    <option value="Ground Bar">Ground Bar</option>
-                                                                                    <option value="Flat Bar">Flat Bar</option>
-                                                                                    <option value="other">Other (specify)</option>
-                                                                                </select>
-                                                                                <input type="text" name="raw_material_type_other" placeholder="Specify Material Type" class="form-control mt-1"
-                                                                                    style="display: none;">
-                                                                            </div>
-                                                                            <input type="text" name="raw_material_grade" placeholder="Material Grade"
-                                                                                class="form-control" required>
-                                                                            <input type="text" name="raw_material_dimensions"
-                                                                                placeholder="Dimensions (L×W×T, diameter, etc.)" class="form-control"
-                                                                                required>
-                                                                            <input type="text" name="vendor_name" placeholder="Vendor Name"
-                                                                                class="form-control" required>
-                                                                            <input type="date" name="purchase_date" title="Purchase Date" class="form-control"
-                                                                                required>
-                                                                        </div>
-                                                                        <div class="d-flex gap-2 justify-content-end">
-                                                                            <button type="button" class="btn btn-reset btn-small"
-                                                                                onclick="resetForm('raw-material-form-<?= $order['order_id'] ?>-<?= $itemIndex ?>')"
-                                                                                title="Clear this form"><i class="bi bi-arrow-repeat"></i> Clear Form</button>
-                                                                            <button type="submit" name="add_raw_material" class="btn btn-success"><i class="bi bi-plus-circle"></i> Add
-                                                                                Material & Notify Production</button>
-                                                                        </div>
-                                                                    </form>
-                                                                <?php endif; ?>
-                                                            </div>
-                                                        </div>
-                                                    <?php endif; ?>
+                                                <!-- Stage Content - Dynamic based on item status -->
+                                                <div class="stage-content">
+                                                    <?php
+                                                    $itemStatus = $item['item_status'] ?? 'Pending';
 
-                                                    <!-- Stage 3: Machining Processes -->
-                                                    <?php if (!empty($item['machining_processes']) || (($order['status'] ?? '') === 'In Production' || ($item['item_status'] ?? '') === 'In Production' || ($item['item_status'] ?? '') === 'Sourcing Material')): ?>
-                                                        <div class="stage-section">
-                                                            <div class="stage-header">
-                                                                <span><i class="bi bi-gear"></i> Stage 3: Machining Processes</span>
-                                                                <small>Person in charge: Production Manager</small>
-                                                            </div>
-                                                            <div class="stage-content">
-                                                                <?php if (!empty($item['machining_processes'])): ?>
-                                                                    <?php foreach ($item['machining_processes'] as $processIndex => $process): ?>
-                                                                        <div class="process-entry">
-                                                                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                                                                <h6 class="m-0 text-primary">
-                                                                                    Seq #<?= htmlspecialchars($process['sequence']) ?>:
-                                                                                    <?= htmlspecialchars($process['name']) ?>
-                                                                                    <span class="process-status-badge ms-2"
-                                                                                        style="padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.8rem; font-weight: bold; background: #e2e8f0;">
-                                                                                        <?= htmlspecialchars($process['status']) ?>
-                                                                                    </span>
-                                                                                </h6>
-                                                                            </div>
+                                                    switch ($itemStatus) {
+                                                        case 'Pending':
+                                                            echo showPendingStage($order, $item, $itemIndex, $csrfToken);
+                                                            break;
 
-                                                                            <div class="process-details small mb-2">
-                                                                                <div><strong>Vendor:</strong> <?= htmlspecialchars($process['vendor']) ?></div>
-                                                                                <div><strong>Start Date:</strong>
-                                                                                    <?= htmlspecialchars($process['start_date']) ?></div>
-                                                                                <div><strong>Expected Completion:</strong>
-                                                                                    <?= htmlspecialchars($process['expected_completion']) ?></div>
-                                                                                <?php if (!empty($process['actual_completion'])): ?>
-                                                                                    <div><strong>Actual Completion:</strong>
-                                                                                        <?= htmlspecialchars($process['actual_completion']) ?></div>
-                                                                                <?php endif; ?>
-                                                                                <?php if (!empty($process['remarks'])): ?>
-                                                                                    <div><strong>Remarks:</strong> <?= htmlspecialchars($process['remarks']) ?>
-                                                                                    </div>
-                                                                                <?php endif; ?>
-                                                                            </div>
+                                                        case 'Sourcing Material':
+                                                            echo showSourcingStage($order, $item, $itemIndex, $csrfToken);
+                                                            break;
 
-                                                                            <!-- Process Documents Display -->
-                                                                            <?php if (!empty($process['documents'])): ?>
-                                                                                <div class="process-documents mt-2">
-                                                                                    <strong>Documents:</strong>
-                                                                                    <div class="d-flex flex-wrap gap-2 mt-1">
-                                                                                        <?php foreach ($process['documents'] as $docIndex => $doc): ?>
-                                                                                            <div class="document-item">
-                                                                                                <i class="bi bi-file-earmark"></i>
-                                                                                                <span class="small"><?= htmlspecialchars($process['original_filenames'][$docIndex] ?? $doc) ?></span>
-                                                                                                <a href="uploads/machining_docs/<?= htmlspecialchars($doc) ?>" download class="btn btn-small btn-outline-primary">
-                                                                                                    <i class="bi bi-download"></i>
-                                                                                                </a>
-                                                                                            </div>
-                                                                                        <?php endforeach; ?>
-                                                                                    </div>
-                                                                                </div>
-                                                                            <?php endif; ?>
+                                                        case 'In Production':
+                                                            echo showProductionStage($order, $item, $itemIndex, $csrfToken);
+                                                            break;
 
-                                                                            <!-- Process Update Form -->
-                                                                            <?php if ($process['status'] !== 'Completed'): ?>
-                                                                                <form action="pipeline.php" method="post" enctype="multipart/form-data"
-                                                                                    class="stage-form no-print mt-3">
-                                                                                    <input type="hidden" name="order_id"
-                                                                                        value="<?= htmlspecialchars($order['order_id']) ?>">
-                                                                                    <input type="hidden" name="item_index" value="<?= $itemIndex ?>">
-                                                                                    <input type="hidden" name="process_index" value="<?= $processIndex ?>">
-                                                                                    <div class="form-grid">
-                                                                                        <input type="date" name="actual_completion"
-                                                                                            placeholder="Actual Completion Date" class="form-control">
-                                                                                        <select name="process_status" class="form-select" required>
-                                                                                            <option value="Not Started" <?= $process['status'] == 'Not Started' ? 'selected' : '' ?>>Not Started</option>
-                                                                                            <option value="In Progress" <?= $process['status'] == 'In Progress' ? 'selected' : '' ?>>In Progress</option>
-                                                                                            <option value="Completed" <?= $process['status'] == 'Completed' ? 'selected' : '' ?>>Completed</option>
-                                                                                            <option value="On Hold" <?= $process['status'] == 'On Hold' ? 'selected' : '' ?>>On Hold</option>
-                                                                                        </select>
-                                                                                        <input type="file" name="process_document"
-                                                                                            accept=".jpg,.jpeg,.png,.pdf,.doc,.docx" class="form-control"
-                                                                                            title="Upload process document">
-                                                                                        <textarea name="remarks" placeholder="Process remarks/notes"
-                                                                                            class="form-control" rows="3"><?= htmlspecialchars($process['remarks']) ?></textarea>
-                                                                                    </div>
-                                                                                    <div class="text-end mt-2">
-                                                                                        <button type="submit" name="update_machining_process"
-                                                                                            class="btn btn-success">Update Process</button>
-                                                                                    </div>
-                                                                                </form>
-                                                                            <?php endif; ?>
-                                                                        </div>
-                                                                    <?php endforeach; ?>
-                                                                <?php endif; ?>
+                                                        case 'Ready for QC':
+                                                        case 'QC Completed':
+                                                            echo showQCStage($order, $item, $itemIndex, $csrfToken);
+                                                            break;
 
-                                                                <!-- Add New Process Form -->
-                                                                <?php if (($order['status'] ?? '') === 'In Production' || ($order['status'] ?? '') === 'Sourcing Material' || ($item['item_status'] ?? '') === 'In Production' || ($item['item_status'] ?? '') === 'Sourcing Material'): ?>
-                                                                    <form action="pipeline.php" method="post" class="stage-form no-print">
-                                                                        <input type="hidden" name="order_id"
-                                                                            value="<?= htmlspecialchars($order['order_id']) ?>">
-                                                                        <input type="hidden" name="item_index" value="<?= $itemIndex ?>">
-                                                                        <div class="form-grid">
-                                                                            <div class="form-group">
-                                                                                <select name="process_name" class="form-select"
-                                                                                    onchange="toggleOtherField(this, 'process_name')" required>
-                                                                                    <option value="">-- Select Process --</option>
-                                                                                    <option value="Cutting">Cutting</option>
-                                                                                    <option value="Turning">Turning</option>
-                                                                                    <option value="Milling">Milling</option>
-                                                                                    <option value="Drilling">Drilling</option>
-                                                                                    <option value="Grinding">Grinding</option>
-                                                                                    <option value="Welding">Welding</option>
-                                                                                    <option value="Heat Treatment">Heat Treatment</option>
-                                                                                    <option value="Surface Treatment">Surface Treatment</option>
-                                                                                    <option value="other">Other (specify)</option>
-                                                                                </select>
-                                                                                <input type="text" name="process_name_other" placeholder="Specify Process" class="form-control mt-1"
-                                                                                    style="display: none;">
-                                                                            </div>
-                                                                            <input type="number" name="sequence_number" placeholder="Sequence #"
-                                                                                class="form-control" min="1" required>
-                                                                            <input type="text" name="vendor_name" placeholder="Vendor/Department"
-                                                                                class="form-control" required>
-                                                                            <input type="date" name="start_date" title="Start Date" class="form-control"
-                                                                                required>
-                                                                            <input type="date" name="expected_completion" title="Expected Completion"
-                                                                                class="form-control" required>
-                                                                        </div>
-                                                                        <div class="text-end">
-                                                                            <button type="submit" name="add_machining_process" class="btn btn-success"><i class="bi bi-plus-circle"></i> Add
-                                                                                Process to Schedule</button>
-                                                                        </div>
-                                                                    </form>
-                                                                <?php endif; ?>
-                                                            </div>
-                                                        </div>
-                                                    <?php endif; ?>
+                                                        case 'Packaging':
+                                                            echo showPackagingStage($order, $item, $itemIndex, $csrfToken);
+                                                            break;
 
-                                                    <!-- Stage 4: Quality Inspection -->
-                                                    <?php if (!empty($item['inspection_data']) || (($order['status'] ?? '') === 'Ready for QC' || ($item['item_status'] ?? '') === 'Ready for QC')): ?>
-                                                        <div class="stage-section">
-                                                            <div class="stage-header">
-                                                                <span><i class="bi bi-search"></i> Stage 4: Quality Inspection</span>
-                                                                <small>Person in charge: QC Manager</small>
-                                                            </div>
-                                                            <div class="stage-content">
-                                                                <?php if (!empty($item['inspection_data']) && is_array($item['inspection_data'])): ?>
-                                                                    <?php
-                                                                    // Sort inspections by date (newest first)
-                                                                    $inspections = $item['inspection_data'];
-                                                                    usort($inspections, function ($a, $b) {
-                                                                        return strtotime($b['inspection_date']) - strtotime($a['inspection_date']);
-                                                                    });
-                                                                    ?>
+                                                        case 'Ready for Dispatch':
+                                                            echo showDispatchStage($order, $item, $itemIndex, $csrfToken);
+                                                            break;
 
-                                                                    <?php foreach ($inspections as $inspIndex => $inspection): ?>
-                                                                        <div class="inspection-entry"
-                                                                            style="background: <?= ($inspection['status'] == 'QC Passed') ? '#d4edda' : (($inspection['status'] == 'Rework Required') ? '#f8d7da' : '#fff3cd') ?>; padding: 15px; border-radius: 6px; margin-bottom: 15px; border-left: 4px solid <?= ($inspection['status'] == 'QC Passed') ? '#28a745' : (($inspection['status'] == 'Rework Required') ? '#dc3545' : '#ffc107') ?>;">
-                                                                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                                                                <h6 class="m-0 text-primary">
-                                                                                    Inspection #<?= (count($inspections) - $inspIndex) ?>:
-                                                                                    <?= htmlspecialchars($inspection['type']) ?>
-                                                                                    <span class="inspection-status-badge ms-2"
-                                                                                        style="background: <?= ($inspection['status'] == 'QC Passed') ? '#28a745' : (($inspection['status'] == 'Rework Required') ? '#dc3545' : '#ffc107') ?>; color: white; padding: 0.25rem 0.5rem; border-radius: 0.75rem; font-size: 0.9rem;">
-                                                                                        <?= htmlspecialchars($inspection['status']) ?>
-                                                                                    </span>
-                                                                                </h6>
-                                                                                <small class="text-muted">
-                                                                                    <?= date('M j, Y', strtotime($inspection['inspection_date'])) ?>
-                                                                                </small>
-                                                                            </div>
+                                                        case 'Shipped':
+                                                            echo showShippedStage($order, $item, $itemIndex, $csrfToken);
+                                                            break;
 
-                                                                            <div class="inspection-details small mb-2">
-                                                                                <div class="d-grid gap-2" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
-                                                                                    <div><strong>Technician:</strong>
-                                                                                        <?= htmlspecialchars($inspection['technician_name']) ?></div>
-                                                                                    <div><strong>Inspection Date:</strong>
-                                                                                        <?= htmlspecialchars($inspection['inspection_date']) ?></div>
-                                                                                    <div><strong>Inspection ID:</strong>
-                                                                                        <?= htmlspecialchars($inspection['inspection_id'] ?? 'N/A') ?></div>
-                                                                                </div>
-                                                                                <?php if (!empty($inspection['remarks'])): ?>
-                                                                                    <div class="mt-2"><strong>Remarks:</strong>
-                                                                                        <?= htmlspecialchars($inspection['remarks']) ?></div>
-                                                                                <?php endif; ?>
-                                                                            </div>
-
-                                                                            <!-- Inspection Documents Display -->
-                                                                            <?php if (!empty($inspection['documents'])): ?>
-                                                                                <div class="inspection-documents mt-2">
-                                                                                    <strong>QC Reports/Documents:</strong>
-                                                                                    <div class="d-flex flex-wrap gap-2 mt-1">
-                                                                                        <?php foreach ($inspection['documents'] as $docIndex => $doc): ?>
-                                                                                            <div class="document-item">
-                                                                                                <i class="bi bi-file-earmark"></i>
-                                                                                                <span class="small"><?= htmlspecialchars($inspection['original_filenames'][$docIndex] ?? $doc) ?></span>
-                                                                                                <a href="uploads/inspection_reports/<?= htmlspecialchars($doc) ?>" download class="btn btn-small btn-outline-primary">
-                                                                                                    <i class="bi bi-download"></i>
-                                                                                                </a>
-                                                                                            </div>
-                                                                                        <?php endforeach; ?>
-                                                                                    </div>
-                                                                                </div>
-                                                                            <?php endif; ?>
-                                                                        </div>
-                                                                    <?php endforeach; ?>
-
-                                                                    <!-- Summary of inspections -->
-                                                                    <div class="bg-info bg-opacity-10 p-3 rounded border border-info mb-3">
-                                                                        <h6 class="m-0 mb-2 text-primary"><i class="bi bi-graph-up"></i> Inspection Summary</h6>
-                                                                        <div class="small">
-                                                                            <?php
-                                                                            $passCount = 0;
-                                                                            $reworkCount = 0;
-                                                                            $minorCount = 0;
-                                                                            foreach ($item['inspection_data'] as $insp) {
-                                                                                if ($insp['status'] === 'QC Passed')
-                                                                                    $passCount++;
-                                                                                elseif ($insp['status'] === 'Rework Required')
-                                                                                    $reworkCount++;
-                                                                                else
-                                                                                    $minorCount++;
-                                                                            }
-                                                                            ?>
-                                                                            <div class="d-flex gap-3">
-                                                                                <div><span class="text-success"><i class="bi bi-check-circle"></i> Passed:</span> <?= $passCount ?></div>
-                                                                                <div><span class="text-danger"><i class="bi bi-arrow-repeat"></i> Rework:</span> <?= $reworkCount ?>
-                                                                                </div>
-                                                                                <div><span class="text-warning"><i class="bi bi-exclamation-triangle"></i> Minor Issues:</span> <?= $minorCount ?>
-                                                                                </div>
-                                                                            </div>
-                                                                            <div class="mt-2">
-                                                                                <strong>Total Inspections:</strong> <?= count($item['inspection_data']) ?>
-                                                                            </div>
-                                                                        </div>
-                                                                    </div>
-                                                                <?php endif; ?>
-
-                                                                <!-- QC Form for new inspection -->
-                                                                <?php
-                                                                // Show form if item is ready for QC or if there was a rework required
-                                                                $showForm = ($item['item_status'] ?? '') === 'Ready for QC';
-                                                                if (!empty($item['inspection_data'])) {
-                                                                    foreach ($item['inspection_data'] as $insp) {
-                                                                        if ($insp['status'] === 'Rework Required') {
-                                                                            $showForm = true;
-                                                                            break;
-                                                                        }
-                                                                    }
-                                                                }
-                                                                ?>
-
-                                                                <?php if ($showForm): ?>
-                                                                    <div class="bg-light p-3 rounded border border-dashed">
-                                                                        <h6 class="m-0 mb-3 text-primary"><i class="bi bi-plus-circle"></i> Add New Inspection</h6>
-                                                                        <form action="pipeline.php" method="post" enctype="multipart/form-data"
-                                                                            class="stage-form no-print">
-                                                                            <input type="hidden" name="order_id"
-                                                                                value="<?= htmlspecialchars($order['order_id']) ?>">
-                                                                            <input type="hidden" name="item_index" value="<?= $itemIndex ?>">
-                                                                            <div class="form-grid">
-                                                                                <select name="inspection_status" class="form-select" required>
-                                                                                    <option value="">-- Inspection Result --</option>
-                                                                                    <option value="QC Passed">QC Passed</option>
-                                                                                    <option value="Rework Required">Rework Required</option>
-                                                                                    <option value="Minor Issues">Minor Issues</option>
-                                                                                </select>
-                                                                                <div class="form-group">
-                                                                                    <select name="inspection_type" class="form-select"
-                                                                                        onchange="toggleOtherField(this, 'inspection_type')" required>
-                                                                                        <option value="">-- Inspection Type --</option>
-                                                                                        <option value="Dimensional Check">Dimensional Check</option>
-                                                                                        <option value="Visual Inspection">Visual Inspection</option>
-                                                                                        <option value="Material Test">Material Test</option>
-                                                                                        <option value="Functional Test">Functional Test</option>
-                                                                                        <option value="Surface Quality">Surface Quality</option>
-                                                                                        <option value="Final Inspection">Final Inspection</option>
-                                                                                        <option value="Re-inspection">Re-inspection</option>
-                                                                                        <option value="other">Other (specify)</option>
-                                                                                    </select>
-                                                                                    <input type="text" name="inspection_type_other" placeholder="Specify Inspection Type" class="form-control mt-1"
-                                                                                        style="display: none;">
-                                                                                </div>
-                                                                                <input type="text" name="technician_name" placeholder="QC Technician Name"
-                                                                                    class="form-control" required>
-                                                                                <input type="date" name="inspection_date" title="Inspection Date"
-                                                                                    class="form-control" required value="<?= date('Y-m-d') ?>">
-                                                                                <input type="file" name="qc_document"
-                                                                                    accept=".jpg,.jpeg,.png,.pdf,.doc,.docx" class="form-control"
-                                                                                    title="Upload QC Report/Document">
-                                                                                <textarea name="remarks" placeholder="QC Remarks/Notes"
-                                                                                    class="form-control" rows="3" style="grid-column: 1 / -1;"></textarea>
-                                                                            </div>
-                                                                            <div class="text-end mt-3">
-                                                                                <button type="submit" name="submit_inspection_report"
-                                                                                    class="btn btn-success"><i class="bi bi-clipboard-check"></i> Submit Inspection Report</button>
-                                                                            </div>
-                                                                        </form>
-                                                                    </div>
-                                                                <?php endif; ?>
-                                                            </div>
-                                                        </div>
-                                                    <?php endif; ?>
-
-                                                    <!-- Stage 5: Packaging -->
-                                                    <?php if (!empty($item['packaging_lots']) || (($order['status'] ?? '') === 'QC Completed' || ($item['item_status'] ?? '') === 'QC Completed' || ($item['item_status'] ?? '') === 'Packaging')): ?>
-                                                        <div class="stage-section">
-                                                            <div class="stage-header">
-                                                                <span><i class="bi bi-box-seam"></i> Stage 5: Packaging</span>
-                                                                <small>Person in charge: Packaging Team</small>
-                                                            </div>
-                                                            <div class="stage-content">
-                                                                <?php if (!empty($item['packaging_lots'])): ?>
-                                                                    <?php foreach ($item['packaging_lots'] as $lotIndex => $lot): ?>
-                                                                        <div class="packaging-lot">
-                                                                            <h6 class="m-0 mb-2 text-primary"><i class="bi bi-box"></i> Lot #<?= ($lotIndex + 1) ?> -
-                                                                                <?= htmlspecialchars($lot['products_in_lot']) ?> products
-                                                                            </h6>
-
-                                                                            <div class="d-grid gap-2 small" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
-                                                                                <div><strong>Packaging Type:</strong>
-                                                                                    <?= htmlspecialchars($lot['packaging_type']) ?></div>
-                                                                                <div><strong>Date:</strong> <?= htmlspecialchars($lot['packaging_date']) ?>
-                                                                                </div>
-                                                                                <div><strong>Packages:</strong> <?= htmlspecialchars($lot['num_packages']) ?>
-                                                                                </div>
-                                                                                <div><strong>Net Weight:</strong> <?= htmlspecialchars($lot['net_weight']) ?> kg
-                                                                                </div>
-                                                                                <div><strong>Gross Weight:</strong>
-                                                                                    <?= htmlspecialchars($lot['gross_weight']) ?> kg</div>
-                                                                                <div><strong>Docs Included:</strong>
-                                                                                    <?= htmlspecialchars($lot['docs_included']) ?></div>
-                                                                            </div>
-
-                                                                            <!-- Fumigation Information Display -->
-                                                                            <?php if (!empty($lot['fumigation_completed']) && $lot['fumigation_completed'] === 'Yes'): ?>
-                                                                                <div class="mt-2 p-2 bg-success bg-opacity-10 rounded border border-success">
-                                                                                    <strong><i class="bi bi-check-circle text-success"></i> Fumigation Details:</strong>
-                                                                                    <div class="mt-1 small">
-                                                                                        Certificate
-                                                                                        #<?= htmlspecialchars($lot['fumigation_certificate_number'] ?? 'N/A') ?> |
-                                                                                        Date: <?= htmlspecialchars($lot['fumigation_date'] ?? 'N/A') ?> |
-                                                                                        Agency: <?= htmlspecialchars($lot['fumigation_agency'] ?? 'N/A') ?>
-                                                                                    </div>
-                                                                                </div>
-                                                                            <?php endif; ?>
-
-                                                                            <!-- Packaging Photos Display -->
-                                                                            <?php if (!empty($lot['photos'])): ?>
-                                                                                <div class="mt-2">
-                                                                                    <strong>Product Photos:</strong>
-                                                                                    <div class="d-flex flex-wrap gap-2 mt-1">
-                                                                                        <?php foreach ($lot['photos'] as $photoIndex => $photo): ?>
-                                                                                            <div class="position-relative">
-                                                                                                <img src="uploads/packaging_photos/<?= htmlspecialchars($photo) ?>"
-                                                                                                    alt="Product Photo"
-                                                                                                    class="img-thumbnail object-fit-cover rounded cursor-pointer"
-                                                                                                    style="width: 100px; height: 100px; object-fit: cover;"
-                                                                                                    onclick="showDrawingModal(this)"
-                                                                                                    data-src="uploads/packaging_photos/<?= htmlspecialchars($photo) ?>">
-                                                                                                <a href="uploads/packaging_photos/<?= htmlspecialchars($photo) ?>" download class="btn btn-small btn-outline-primary position-absolute top-0 end-0">
-                                                                                                    <i class="bi bi-download"></i>
-                                                                                                </a>
-                                                                                            </div>
-                                                                                        <?php endforeach; ?>
-                                                                                    </div>
-                                                                                </div>
-                                                                            <?php endif; ?>
-
-                                                                            <!-- Shipping Documents Display -->
-                                                                            <?php if (!empty($lot['shipping_documents'])): ?>
-                                                                                <div class="mt-2">
-                                                                                    <strong>Shipping Documents:</strong>
-                                                                                    <div class="d-flex flex-wrap gap-2 mt-1">
-                                                                                        <?php foreach ($lot['shipping_documents'] as $docIndex => $doc): ?>
-                                                                                            <div class="document-item">
-                                                                                                <i class="bi bi-file-earmark"></i>
-                                                                                                <span class="small"><?= htmlspecialchars($lot['shipping_original_filenames'][$docIndex] ?? $doc) ?></span>
-                                                                                                <a href="uploads/shipping_docs/<?= htmlspecialchars($doc) ?>" download class="btn btn-small btn-outline-primary">
-                                                                                                    <i class="bi bi-download"></i>
-                                                                                                </a>
-                                                                                            </div>
-                                                                                        <?php endforeach; ?>
-                                                                                    </div>
-                                                                                </div>
-                                                                            <?php endif; ?>
-
-                                                                            <!-- Dispatch Status -->
-                                                                            <?php if (!empty($lot['dispatch_status'])): ?>
-                                                                                <div class="dispatch-details mt-3">
-                                                                                    <h6 class="m-0 mb-2 text-success"><i class="bi bi-truck"></i> Dispatch Details</h6>
-                                                                                    <div class="small">
-                                                                                        <div><strong>Status:</strong> <?= htmlspecialchars($lot['dispatch_status']) ?></div>
-                                                                                        <div><strong>Dispatch Date:</strong> <?= htmlspecialchars($lot['dispatch_date'] ?? 'N/A') ?></div>
-                                                                                        <div><strong>Transport Mode:</strong> <?= htmlspecialchars($lot['transport_mode'] ?? 'N/A') ?></div>
-                                                                                        <div><strong>Tracking Number:</strong> <?= htmlspecialchars($lot['tracking_number'] ?? 'N/A') ?></div>
-                                                                                        <?php if (!empty($lot['dispatch_remarks'])): ?>
-                                                                                            <div><strong>Remarks:</strong> <?= htmlspecialchars($lot['dispatch_remarks']) ?></div>
-                                                                                        <?php endif; ?>
-                                                                                    </div>
-                                                                                </div>
-                                                                            <?php endif; ?>
-
-                                                                            <!-- Shipping Documents Form -->
-                                                                            <?php if (empty($lot['shipping_documents']) && ($lot['dispatch_status'] ?? '') !== 'Shipped'): ?>
-                                                                                <form action="pipeline.php" method="post" enctype="multipart/form-data"
-                                                                                    class="stage-form no-print mt-3">
-                                                                                    <input type="hidden" name="order_id" value="<?= htmlspecialchars($order['order_id']) ?>">
-                                                                                    <input type="hidden" name="item_index" value="<?= $itemIndex ?>">
-                                                                                    <input type="hidden" name="lot_index" value="<?= $lotIndex ?>">
-                                                                                    <div class="form-grid">
-                                                                                        <div style="grid-column: 1 / -1;">
-                                                                                            <label class="form-label">Shipping Documents (Packing List, Commercial Invoice, etc.):</label>
-                                                                                            <input type="file" name="shipping_docs[]" multiple accept=".jpg,.jpeg,.png,.pdf,.doc,.docx,.xls,.xlsx" class="form-control">
-                                                                                            <div class="form-text">Multiple files can be selected</div>
-                                                                                        </div>
-                                                                                    </div>
-                                                                                    <div class="text-end mt-3">
-                                                                                        <button type="submit" name="add_shipping_documents" class="btn btn-success"><i class="bi bi-file-earmark-arrow-up"></i> Upload Shipping Documents</button>
-                                                                                    </div>
-                                                                                </form>
-                                                                            <?php endif; ?>
-
-                                                                            <!-- Dispatch Form -->
-                                                                            <?php if (!empty($lot['shipping_documents']) && empty($lot['dispatch_status'])): ?>
-                                                                                <form action="pipeline.php" method="post" class="stage-form no-print mt-3">
-                                                                                    <input type="hidden" name="order_id" value="<?= htmlspecialchars($order['order_id']) ?>">
-                                                                                    <input type="hidden" name="item_index" value="<?= $itemIndex ?>">
-                                                                                    <input type="hidden" name="lot_index" value="<?= $lotIndex ?>">
-                                                                                    <h6 class="m-0 mb-3 text-primary"><i class="bi bi-truck"></i> Dispatch This Lot</h6>
-                                                                                    <div class="form-grid">
-                                                                                        <input type="date" name="dispatch_date" title="Dispatch Date" class="form-control" required value="<?= date('Y-m-d') ?>">
-                                                                                        <select name="transport_mode" class="form-select" required>
-                                                                                            <option value="">-- Transport Mode --</option>
-                                                                                            <option value="Air Freight">Air Freight</option>
-                                                                                            <option value="Sea Freight">Sea Freight</option>
-                                                                                            <option value="Road Transport">Road Transport</option>
-                                                                                            <option value="Courier">Courier</option>
-                                                                                            <option value="Express">Express</option>
-                                                                                        </select>
-                                                                                        <input type="text" name="tracking_number" placeholder="Tracking Number" class="form-control" required>
-                                                                                        <textarea name="dispatch_remarks" placeholder="Dispatch Remarks" class="form-control" rows="3" style="grid-column: 1 / -1;"></textarea>
-                                                                                    </div>
-                                                                                    <div class="text-end mt-3">
-                                                                                        <button type="submit" name="update_dispatch_details" class="btn btn-success"><i class="bi bi-truck"></i> Mark as Shipped</button>
-                                                                                    </div>
-                                                                                </form>
-                                                                            <?php endif; ?>
-                                                                        </div>
-                                                                    <?php endforeach; ?>
-                                                                <?php endif; ?>
- <!-- Add New Packaging Lot Form -->
-                                                                <?php if (($order['status'] ?? '') === 'QC Completed' || ($item['item_status'] ?? '') === 'QC Completed' || ($item['item_status'] ?? '') === 'Packaging'): ?>
-                                                                    <div class="bg-light p-3 rounded border border-dashed">
-                                                                        <h6 class="m-0 mb-3 text-primary"><i class="bi bi-plus-circle"></i> Add New Packaging Lot</h6>
-                                                                        <form action="pipeline.php" method="post" enctype="multipart/form-data" class="stage-form no-print">
-                                                                            <input type="hidden" name="order_id" value="<?= htmlspecialchars($order['order_id']) ?>">
-                                                                            <input type="hidden" name="item_index" value="<?= $itemIndex ?>">
-                                                                            
-                                                                            <div class="form-grid">
-                                                                                <!-- Product Photos -->
-                                                                                <div style="grid-column: 1 / -1;">
-                                                                                    <label class="form-label">Product Photos:</label>
-                                                                                    <input type="file" name="product_photos[]" multiple accept=".jpg,.jpeg,.png" class="form-control" required>
-                                                                                    <div class="form-text">Multiple photos can be selected to show different angles</div>
-                                                                                </div>
-
-                                                                                <!-- Basic Packaging Info -->
-                                                                                <input type="text" name="products_in_lot" placeholder="Number of Products in Lot" class="form-control" required>
-                                                                                
-                                                                                <div class="form-group">
-                                                                                    <select name="packaging_type" class="form-select" onchange="toggleOtherField(this, 'packaging_type')" required>
-                                                                                        <option value="">-- Packaging Type --</option>
-                                                                                        <option value="Wooden Crate">Wooden Crate</option>
-                                                                                        <option value="Cardboard Box">Cardboard Box</option>
-                                                                                        <option value="Pallet">Pallet</option>
-                                                                                        <option value="Steel Frame">Steel Frame</option>
-                                                                                        <option value="Shrink Wrap">Shrink Wrap</option>
-                                                                                        <option value="other">Other (specify)</option>
-                                                                                    </select>
-                                                                                    <input type="text" name="packaging_type_other" placeholder="Specify Packaging Type" class="form-control mt-1" style="display: none;">
-                                                                                </div>
-
-                                                                                <input type="date" name="packaging_date" title="Packaging Date" class="form-control" required value="<?= date('Y-m-d') ?>">
-                                                                                <input type="number" name="num_packages" placeholder="Number of Packages" class="form-control" required min="1">
-                                                                                <input type="text" name="weight_per_package" placeholder="Weight per Package (kg)" class="form-control" required>
-                                                                                <input type="text" name="dimensions_per_package" placeholder="Dimensions per Package" class="form-control" required>
-                                                                                <input type="text" name="net_weight" placeholder="Net Weight (kg)" class="form-control" required>
-                                                                                <input type="text" name="gross_weight" placeholder="Gross Weight (kg)" class="form-control" required>
-
-                                                                                <!-- Fumigation Section -->
-                                                                                <div style="grid-column: 1 / -1; background: #fff3cd; padding: 15px; border-radius: 6px; border: 1px solid #ffeaa7;">
-                                                                                    <h6 class="m-0 mb-2 text-warning"><i class="bi bi-tree"></i> Fumigation Requirements</h6>
-                                                                                    <div class="form-grid">
-                                                                                        <div style="grid-column: 1 / -1;">
-                                                                                            <label class="d-flex align-items-center gap-2">
-                                                                                                <input type="checkbox" name="fumigation_completed" value="1" required class="form-check-input">
-                                                                                                <span class="fw-semibold">Fumigation has been completed as per requirements</span>
-                                                                                            </label>
-                                                                                        </div>
-                                                                                        <input type="text" name="fumigation_certificate_number" placeholder="Fumigation Certificate Number" class="form-control" required>
-                                                                                        <input type="date" name="fumigation_date" title="Fumigation Date" class="form-control" required value="<?= date('Y-m-d') ?>">
-                                                                                        <input type="text" name="fumigation_agency" placeholder="Fumigation Agency" class="form-control" required>
-                                                                                    </div>
-                                                                                </div>
-
-                                                                                <!-- Documentation -->
-                                                                                <div style="grid-column: 1 / -1;">
-                                                                                    <label class="d-flex align-items-center gap-2">
-                                                                                        <input type="checkbox" name="docs_included" value="1" class="form-check-input">
-                                                                                        <span>All required documents included in package</span>
-                                                                                    </label>
-                                                                                </div>
-                                                                            </div>
-
-                                                                            <div class="text-end mt-3">
-                                                                                <button type="submit" name="add_packaging_lot" class="btn btn-success"><i class="bi bi-box-seam"></i> Create Packaging Lot</button>
-                                                                            </div>
-                                                                        </form>
-                                                                    </div>
-                                                                <?php endif; ?>
-                                                            </div>
-                                                        </div>
-                                                    <?php endif; ?>
+                                                        default:
+                                                            echo showPendingStage($order, $item, $itemIndex, $csrfToken);
+                                                    }
+                                                    ?>
                                                 </div>
                                             </div>
-                                        <?php endforeach; ?>
+                                        </div>
+                                    <?php endforeach; ?>
                                 </div>
 
                                 <!-- Status Control Panel -->
@@ -2459,6 +2640,7 @@ if (isset($_SESSION['message'])) {
 
                                     <!-- Status Update Form -->
                                     <form action="pipeline.php" method="post" class="no-print mt-3">
+                                        <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
                                         <input type="hidden" name="order_id" value="<?= htmlspecialchars($order['order_id']) ?>">
                                         <select name="new_status" class="form-select mb-2">
                                             <?php foreach ($STANDARD_STATUSES as $status): ?>
@@ -2469,11 +2651,16 @@ if (isset($_SESSION['message'])) {
                                     </form>
 
                                     <!-- Delete Order Button -->
-                                    <form action="pipeline.php" method="post" class="no-print mt-3"
-                                        onsubmit="return confirm('Are you sure you want to delete this order? This action cannot be undone.');">
-                                        <input type="hidden" name="order_id" value="<?= htmlspecialchars($order['order_id']) ?>">
-                                        <button type="submit" name="delete_order" class="btn btn-danger w-100"><i class="bi bi-trash"></i> Delete Order</button>
-                                    </form>
+                                    <?php if (hasRole('admin')): ?>
+                                        <form action="pipeline.php" method="post" class="no-print mt-3"
+                                            onsubmit="return confirm('Are you sure you want to delete this order? This action cannot be undone.');">
+                                            <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                                            <input type="hidden" name="order_id" value="<?= htmlspecialchars($order['order_id']) ?>">
+                                            <button type="submit" name="delete_order" class="btn btn-danger w-100">
+                                                <i class="bi bi-trash"></i> Delete Order
+                                            </button>
+                                        </form>
+                                    <?php endif; ?>
                                 </div>
                             </div>
                         </div>
@@ -2492,10 +2679,12 @@ if (isset($_SESSION['message'])) {
         </div>
     </div>
 
-    <!-- Drawing Modal -->
-    <div id="drawingModal" class="drawing-modal">
-        <span class="drawing-modal-close">&times;</span>
-        <img id="modalDrawing" src="" alt="Drawing Preview">
+    <!-- Image Modal -->
+    <div id="imageModal" class="modal">
+        <div class="modal-content" style="max-width: 90%; max-height: 90%;">
+            <span class="modal-close" onclick="closeImageModal()">&times;</span>
+            <img id="modalImage" src="" alt="Preview" style="width: 100%; height: auto;">
+        </div>
     </div>
 
     <!-- Back to Top Button -->
@@ -2511,11 +2700,10 @@ if (isset($_SESSION['message'])) {
                 const body = this.nextElementSibling;
                 const isExpanded = body.style.display === 'block';
                 const toggleIcon = this.querySelector('.toggle-icon i');
-                
+
                 body.style.display = isExpanded ? 'none' : 'block';
                 this.classList.toggle('expanded', !isExpanded);
-                
-                // Update toggle icons using Bootstrap icons
+
                 if (!isExpanded) {
                     toggleIcon.className = 'bi bi-caret-down-fill';
                 } else {
@@ -2561,27 +2749,21 @@ if (isset($_SESSION['message'])) {
             const otherInput = selectElement.parentNode.querySelector(`[name="${fieldName}_other"]`);
             if (otherInput) {
                 otherInput.style.display = selectElement.value === 'other' ? 'block' : 'none';
+                otherInput.required = selectElement.value === 'other';
                 if (selectElement.value !== 'other') {
                     otherInput.value = '';
                 }
             }
         }
 
-        // Initialize other fields
-        document.querySelectorAll('select').forEach(select => {
-            if (select.name.includes('_type') || select.name.includes('_name')) {
-                toggleOtherField(select, select.name);
-            }
-        });
-
         // File upload preview
         function previewUploadFile(input) {
-            const preview = input.parentNode.querySelector('.upload-preview');
+            const preview = input.parentNode.parentNode.querySelector('.upload-preview');
             if (input.files && input.files[0]) {
                 const file = input.files[0];
                 const fileName = file.name;
                 const fileSize = (file.size / 1024 / 1024).toFixed(2); // MB
-                
+
                 preview.querySelector('.preview-name').textContent = fileName;
                 preview.querySelector('.preview-size').textContent = fileSize + ' MB';
                 preview.style.display = 'block';
@@ -2597,7 +2779,6 @@ if (isset($_SESSION['message'])) {
 
         function hideDrawingForm(formId) {
             document.getElementById(formId).style.display = 'none';
-            // Reset form
             const form = document.getElementById(formId).querySelector('form');
             if (form) {
                 form.reset();
@@ -2608,33 +2789,50 @@ if (isset($_SESSION['message'])) {
             }
         }
 
-        // Drawing modal functionality
-        function showDrawingModal(imgElement) {
-            const modal = document.getElementById('drawingModal');
-            const modalImg = document.getElementById('modalDrawing');
-            modalImg.src = imgElement.getAttribute('data-src');
-            modal.style.display = 'block';
+        // Process modal controls
+        function showProcessModal(itemIndex, processIndex) {
+            document.getElementById('processModal-' + itemIndex + '-' + processIndex).style.display = 'block';
+        }
+
+        function closeProcessModal(itemIndex, processIndex) {
+            document.getElementById('processModal-' + itemIndex + '-' + processIndex).style.display = 'none';
+        }
+
+        // Image modal controls
+        function showImageModal(imageSrc) {
+            document.getElementById('modalImage').src = imageSrc;
+            document.getElementById('imageModal').style.display = 'block';
+        }
+
+        function closeImageModal() {
+            document.getElementById('imageModal').style.display = 'none';
         }
 
         // Close modals
-        document.querySelectorAll('.modal-close, .drawing-modal-close').forEach(closeBtn => {
+        document.querySelectorAll('.modal-close').forEach(closeBtn => {
             closeBtn.addEventListener('click', function() {
                 this.closest('.modal').style.display = 'none';
-                document.getElementById('drawingModal').style.display = 'none';
             });
         });
 
         // Close modal when clicking outside
         window.addEventListener('click', function(event) {
             const historyModal = document.getElementById('historyModal');
-            const drawingModal = document.getElementById('drawingModal');
-            
+            const imageModal = document.getElementById('imageModal');
+
             if (event.target === historyModal) {
                 historyModal.style.display = 'none';
             }
-            if (event.target === drawingModal) {
-                drawingModal.style.display = 'none';
+            if (event.target === imageModal) {
+                imageModal.style.display = 'none';
             }
+
+            // Close process modals
+            document.querySelectorAll('.modal').forEach(modal => {
+                if (event.target === modal) {
+                    modal.style.display = 'none';
+                }
+            });
         });
 
         // Back to top button
@@ -2644,7 +2842,10 @@ if (isset($_SESSION['message'])) {
         });
 
         backToTopButton.addEventListener('click', () => {
-            window.scrollTo({ top: 0, behavior: 'smooth' });
+            window.scrollTo({
+                top: 0,
+                behavior: 'smooth'
+            });
         });
 
         // Order history modal
@@ -2656,120 +2857,90 @@ if (isset($_SESSION['message'])) {
         });
 
         function fetchOrderHistory(orderId) {
-            // This would typically fetch from an API endpoint
-            // For now, we'll show a placeholder
-            document.getElementById('historyContent').innerHTML = `
-                <div style="text-align: center; padding: 20px;">
-                    <p>Loading history for order #${orderId}...</p>
-                    <p><em>History tracking feature would display all changes made to this order.</em></p>
-                </div>
-            `;
-            document.getElementById('historyModal').style.display = 'block';
-        }
+            const modal = document.getElementById('historyModal');
+            const content = document.getElementById('historyContent');
 
-        // Reset form functionality
-        function resetForm(formId) {
-            const form = document.getElementById(formId);
-            if (form) {
-                form.reset();
-                // Hide any "other" input fields
-                form.querySelectorAll('select').forEach(select => {
-                    toggleOtherField(select, select.name);
+            // Show loading
+            content.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div></div>';
+            modal.style.display = 'block';
+
+            // Fetch history via AJAX
+            fetch(`get_order_history.php?order_id=${orderId}`)
+                .then(response => response.text())
+                .then(html => {
+                    content.innerHTML = html;
+                })
+                .catch(error => {
+                    content.innerHTML = '<div class="alert alert-danger">Failed to load history.</div>';
                 });
-            }
         }
 
-        // Reset ALL forms for an item
-        function resetAllItemForms(button) {
-            const itemBody = button.closest('.item-body');
-            if (itemBody && confirm('This will clear ALL forms for this item. Continue?')) {
-                itemBody.querySelectorAll('form').forEach(form => {
-                    form.reset();
-                    // Hide any "other" input fields
-                    form.querySelectorAll('select').forEach(select => {
-                        toggleOtherField(select, select.name);
-                    });
-                    // Hide file previews
-                    form.querySelectorAll('.upload-preview').forEach(preview => {
-                        preview.style.display = 'none';
-                    });
-                });
-            }
-        }
-
-        // Auto-expand items with active forms or overdue status
+        // Auto-hide toast messages
         document.addEventListener('DOMContentLoaded', function() {
-            document.querySelectorAll('.order-card.overdue .item-header').forEach(header => {
-                const body = header.nextElementSibling;
-                const toggleIcon = header.querySelector('.toggle-icon i');
-                
-                body.style.display = 'block';
-                header.classList.add('expanded');
-                toggleIcon.className = 'bi bi-caret-down-fill';
+            const toasts = document.querySelectorAll('.toast');
+            toasts.forEach(toast => {
+                setTimeout(() => {
+                    toast.style.opacity = '0';
+                    setTimeout(() => toast.remove(), 300);
+                }, 5000);
             });
 
-            // Show toast notification if exists
-            const toast = document.getElementById('toast-notification');
-            if (toast) {
-                setTimeout(() => {
-                    toast.style.display = 'none';
-                }, 5000);
-            }
+            // Auto-expand overdue orders
+            document.querySelectorAll('.order-card.overdue .item-header').forEach(header => {
+                header.click();
+            });
         });
 
-        // Print functionality enhancement
+        // Print functionality
         window.addEventListener('beforeprint', function() {
             // Expand all items for printing
             document.querySelectorAll('.item-header').forEach(header => {
                 const body = header.nextElementSibling;
-                const toggleIcon = header.querySelector('.toggle-icon i');
-                
                 if (body.style.display !== 'block') {
                     body.style.display = 'block';
                     header.classList.add('expanded');
-                    toggleIcon.className = 'bi bi-caret-down-fill';
                 }
             });
         });
 
-        // Log search/filter activities
-        function logFilterActivity(searchTerm, statusFilter, clientFilter) {
-            // Send to server via AJAX
-            fetch('log_activity.php', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body: 'action=Pipeline Search&details=' + encodeURIComponent(
-                    'Search: "' + searchTerm + '" | Status: "' + statusFilter + '" | Client: "' + clientFilter + '"'
-                )
+        // Form validation
+        document.querySelectorAll('form').forEach(form => {
+            form.addEventListener('submit', function(e) {
+                const requiredFields = this.querySelectorAll('[required]');
+                let isValid = true;
+
+                requiredFields.forEach(field => {
+                    if (!field.value.trim()) {
+                        field.classList.add('is-invalid');
+                        isValid = false;
+                    } else {
+                        field.classList.remove('is-invalid');
+                    }
+                });
+
+                if (!isValid) {
+                    e.preventDefault();
+                    alert('Please fill in all required fields.');
+                }
             });
-        }
+        });
 
-        // Then modify your existing filterOrders function to include logging:
-        function filterOrders() {
-            const searchTerm = document.getElementById('orderSearch').value.toLowerCase();
-            const statusFilter = document.getElementById('statusFilter').value;
-            const clientFilter = document.getElementById('clientFilter').value;
-
-            // Log the filter activity
-            if (searchTerm || statusFilter || clientFilter) {
-                logFilterActivity(searchTerm, statusFilter, clientFilter);
+        // Keyboard shortcuts
+        document.addEventListener('keydown', function(e) {
+            // Ctrl/Cmd + F for search
+            if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+                e.preventDefault();
+                document.getElementById('orderSearch').focus();
             }
 
-            document.querySelectorAll('.order-card').forEach(card => {
-                const orderId = card.querySelector('.order-info-item:nth-child(1) .order-info-value').textContent.toLowerCase();
-                const clientName = card.querySelector('.order-info-item:nth-child(2) .order-info-value').textContent.toLowerCase();
-                const status = card.getAttribute('data-status');
-                const customerId = card.getAttribute('data-customer-id');
-
-                const matchesSearch = orderId.includes(searchTerm) || clientName.includes(searchTerm);
-                const matchesStatus = !statusFilter || status === statusFilter;
-                const matchesClient = !clientFilter || customerId === clientFilter;
-
-                card.style.display = matchesSearch && matchesStatus && matchesClient ? 'block' : 'none';
-            });
-        }
+            // Escape to close modals
+            if (e.key === 'Escape') {
+                document.querySelectorAll('.modal').forEach(modal => {
+                    modal.style.display = 'none';
+                });
+            }
+        });
     </script>
 </body>
+
 </html>

@@ -1,495 +1,710 @@
 <?php
 session_start();
 require_once 'functions.php';
+require_once 'db.php';
 
-// --- STAGE 1: Handle Order Creation ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_order'])) {
-    $customerId = sanitize_input($_POST['customer_id']);
-    $poDate = sanitize_input($_POST['po_date']);
-    $deliveryDate = sanitize_input($_POST['delivery_date']);
+// Define a constant to prevent function redeclaration
+define('ORDERS_PHP_LOADED', true);
 
-    $orderId = getNextOrderId();
-    $products = getProducts(); // Get from database
-    $orderItems = [];
-    $uploadErrors = [];
+// Check authentication
+// requireAuth();
 
-    // Process existing products
-    if (isset($_POST['product_sno']) && is_array($_POST['product_sno'])) {
-        foreach ($_POST['product_sno'] as $index => $productSNo) {
-            if (!empty($productSNo)) {
-                $product = getProductBySerialNo($productSNo);
-                if ($product) {
-                    $quantity = (int) ($_POST['quantity'][$index] ?? 1);
-                    if ($quantity > 0) {
-                        $dimensions = sanitize_input($_POST['product_dimensions'][$index] ?? '');
-                        $description = sanitize_input($_POST['product_description'][$index] ?? '');
-                        
-                        // Handle file upload for existing products
-                        $drawingData = handleItemFileUpload($_FILES['drawing_file_existing'], $index, $orderId, $productSNo);
+// Check rate limiting
+if (!checkRateLimit('orders_page', $_SESSION['user_id'] ?? 0, 100, 60)) {
+    die('Rate limit exceeded. Please try again later.');
+}
 
-                        if ($drawingData['error']) {
-                            $uploadErrors[] = "Error for product '{$product['name']}': {$drawingData['error']}";
-                            continue;
-                        }
-
-                        $orderItems[] = createOrderItem(
-                            $productSNo,
-                            $product['name'],
-                            !empty($dimensions) ? $dimensions : $product['dimensions'],
-                            $description,
-                            $quantity,
-                            $drawingData
-                        );
-                    }
-                } else {
-                    $uploadErrors[] = "Product not found: {$productSNo}";
-                }
-            }
+// ==========================================
+// AUTO-FIX DATABASE SCHEMA
+// ==========================================
+try {
+    $conn = getDbConnection();
+    
+    // Ensure 'orders' table has correct columns
+    $orderCols = [
+        'po_number' => "VARCHAR(50) DEFAULT '' AFTER customer_id",
+        'total_amount' => "DECIMAL(15,2) DEFAULT 0.00 AFTER status",
+        'priority' => "VARCHAR(20) DEFAULT 'normal' AFTER total_amount",
+        'notes' => "TEXT AFTER priority",
+        'created_by' => "INT AFTER notes",
+        'payment_terms' => "VARCHAR(50) DEFAULT 'Net 30' AFTER due_date",
+        'shipping_method' => "VARCHAR(50) DEFAULT 'Standard' AFTER payment_terms",
+        'shipping_cost' => "DECIMAL(10,2) DEFAULT 0.00 AFTER shipping_method",
+        'tax_rate' => "DECIMAL(5,2) DEFAULT 0.00 AFTER shipping_cost"
+    ];
+    
+    foreach ($orderCols as $col => $def) {
+        try { 
+            $conn->query("SELECT $col FROM orders LIMIT 1"); 
+        } catch (Exception $e) { 
+            $conn->exec("ALTER TABLE orders ADD COLUMN $col $def"); 
         }
     }
 
-    // Process manual products
-    if (isset($_POST['manual_product_name']) && is_array($_POST['manual_product_name'])) {
-        foreach ($_POST['manual_product_name'] as $index => $manualName) {
-            $manualName = sanitize_input($manualName);
-            if (!empty($manualName)) {
-                $manualQty = (int) ($_POST['manual_quantity'][$index] ?? 1);
-                if ($manualQty > 0) {
-                    $manualSNo = generateManualProductId();
-                    $manualDimensions = sanitize_input($_POST['manual_product_dimensions'][$index] ?? '');
-                    $manualDescription = sanitize_input($_POST['manual_product_description'][$index] ?? '');
-                    
-                    // Handle file upload for manual products
-                    $drawingData = handleItemFileUpload($_FILES['drawing_file_manual'], $index, $orderId, $manualSNo);
-
-                    if ($drawingData['error']) {
-                        $uploadErrors[] = "Error for custom product '{$manualName}': {$drawingData['error']}";
-                        continue;
-                    }
-                    
-                    $orderItems[] = createOrderItem(
-                        $manualSNo,
-                        $manualName,
-                        $manualDimensions,
-                        $manualDescription,
-                        $manualQty,
-                        $drawingData
-                    );
-                }
-            }
+    // Ensure 'order_items' table has correct columns
+    $itemCols = [
+        'unit_price' => "DECIMAL(15,2) DEFAULT 0.00 AFTER quantity",
+        'total_price' => "DECIMAL(15,2) DEFAULT 0.00 AFTER unit_price"
+    ];
+    
+    foreach ($itemCols as $col => $def) {
+        try { 
+            $conn->query("SELECT $col FROM order_items LIMIT 1"); 
+        } catch (Exception $e) { 
+            $conn->exec("ALTER TABLE order_items ADD COLUMN $col $def"); 
         }
     }
+
+} catch (Exception $e) {
+    error_log("Schema check error: " . $e->getMessage());
+}
+
+// ==========================================
+// ENHANCED ORDER FUNCTIONS
+// ==========================================
+
+function rearrangeFileArray($file_post) {
+    $file_ary = array();
+    if (!isset($file_post['name']) || !is_array($file_post['name'])) {
+        return $file_ary;
+    }
     
+    $file_count = count($file_post['name']);
+    $file_keys = array_keys($file_post);
     
-    // Check for upload errors before proceeding
-    if (!empty($uploadErrors)) {
-        $_SESSION['message'] = ['type' => 'error', 'text' => implode('<br>', $uploadErrors)];
-    } elseif (!empty($customerId) && !empty($orderItems) && !empty($poDate)) {
-        $newOrder = [
-            'order_id' => $orderId,
-            'customer_id' => $customerId,
-            'po_date' => $poDate,
-            'delivery_date' => $deliveryDate,
-            'due_date' => '',
-            'status' => 'Pending',
-            'drawing_filename' => '',
-            'inspection_reports' => '[]'
-        ];
+    for ($i = 0; $i < $file_count; $i++) {
+        foreach ($file_keys as $key) {
+            $file_ary[$i][$key] = $file_post[$key][$i];
+        }
+    }
+    return $file_ary;
+}
+
+function handleUpload($file, $orderId, $sNo) {
+    if (empty($file['name']) || $file['error'] !== UPLOAD_ERR_OK) {
+        return ['filename' => '', 'original' => ''];
+    }
+    
+    $uploadDir = 'uploads/drawings/';
+    if (!file_exists($uploadDir)) {
+        mkdir($uploadDir, 0777, true);
+    }
+    
+    // Validate file type
+    $allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+    $allowedExtensions = ['pdf', 'jpg', 'jpeg', 'png', 'gif', 'doc', 'docx'];
+    
+    $fileType = mime_content_type($file['tmp_name']);
+    $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+    
+    if (!in_array($fileType, $allowedTypes) || !in_array($ext, $allowedExtensions)) {
+        return ['filename' => '', 'original' => '', 'error' => 'Invalid file type'];
+    }
+    
+    // Check file size (max 10MB)
+    if ($file['size'] > 10 * 1024 * 1024) {
+        return ['filename' => '', 'original' => '', 'error' => 'File too large'];
+    }
+    
+    $cleanName = preg_replace('/[^a-zA-Z0-9]/', '_', $sNo);
+    $filename = $orderId . '_' . $cleanName . '_' . uniqid() . '.' . $ext;
+    
+    if (move_uploaded_file($file['tmp_name'], $uploadDir . $filename)) {
+        return ['filename' => $filename, 'original' => $file['name']];
+    }
+    
+    return ['filename' => '', 'original' => '', 'error' => 'Upload failed'];
+}
+
+
+function getOrdersEnhanced($search = '', $status = '', $customer_id = '', $page = 1, $perPage = 20) {
+    $conn = getDbConnection();
+    
+    $conditions = [];
+    $params = [];
+    
+    if (!empty($search)) {
+        $conditions[] = "(o.order_id LIKE ? OR o.po_number LIKE ? OR c.name LIKE ?)";
+        $searchParam = "%$search%";
+        $params = array_merge($params, [$searchParam, $searchParam, $searchParam]);
+    }
+    
+    if (!empty($status)) {
+        $conditions[] = "o.status = ?";
+        $params[] = $status;
+    }
+    
+    if (!empty($customer_id)) {
+        $conditions[] = "o.customer_id = ?";
+        $params[] = $customer_id;
+    }
+    
+    $whereClause = !empty($conditions) ? 'WHERE ' . implode(' AND ', $conditions) : '';
+    
+    // Get total count
+    $countStmt = $conn->prepare("
+        SELECT COUNT(*) as total 
+        FROM orders o 
+        LEFT JOIN customers c ON o.customer_id = c.id 
+        $whereClause
+    ");
+    $countStmt->execute($params);
+    $totalResult = $countStmt->fetch(PDO::FETCH_ASSOC);
+    $total = $totalResult['total'];
+    
+    // Get paginated results
+    $offset = ($page - 1) * $perPage;
+    
+    $sql = "
+        SELECT o.*, c.name as customer_name, 
+               COUNT(oi.id) as item_count,
+               SUM(oi.total_price) as items_total
+        FROM orders o 
+        LEFT JOIN customers c ON o.customer_id = c.id 
+        LEFT JOIN order_items oi ON o.id = oi.order_id 
+        $whereClause
+        GROUP BY o.id 
+        ORDER BY o.created_at DESC 
+        LIMIT ? OFFSET ?
+    ";
+    
+    $stmt = $conn->prepare($sql);
+    
+    // Bind parameters
+    $boundParams = $params;
+    $boundParams[] = $perPage;
+    $boundParams[] = $offset;
+    
+    $stmt->execute($boundParams);
+    $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    return [
+        'orders' => $orders,
+        'total' => $total
+    ];
+}
+
+function getOrderStatistics() {
+    $conn = getDbConnection();
+    
+    try {
+        $stmt = $conn->prepare("
+            SELECT 
+                COUNT(*) as total_orders,
+                COALESCE(SUM(total_amount), 0) as total_revenue,
+                COUNT(CASE WHEN status = 'Pending' THEN 1 END) as pending_orders,
+                COUNT(CASE WHEN status = 'In Production' THEN 1 END) as production_orders,
+                COUNT(CASE WHEN status = 'Shipped' THEN 1 END) as shipped_orders,
+                COUNT(CASE WHEN DATE(created_at) = CURDATE() THEN 1 END) as today_orders,
+                COUNT(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 END) as weekly_orders
+            FROM orders
+        ");
         
-        if (addOrder($newOrder)) {
-            // Add order items to database
-            foreach ($orderItems as $item) {
-                $success = addOrderItem($orderId, $item);
-                if (!$success) {
-                    $_SESSION['message'] = ['type' => 'error', 'text' => 'Error adding order items to database.'];
-                    header('Location: orders.php');
-                    exit;
-                }
-            }
-            
-            logChange($orderId, 'Order Creation', "New order created with " . count($orderItems) . " items");
-            logActivity("Order Created", "Order {$orderId} created for customer {$customerId}");
-            
-            $_SESSION['message'] = ['type' => 'success', 'text' => "Order {$orderId} created successfully!"];
-            header('Location: orders.php');
-            exit;
-        } else {
-            $_SESSION['message'] = ['type' => 'error', 'text' => 'Error creating order in database.'];
-        }
-    } else {
-        $_SESSION['message'] = ['type' => 'error', 'text' => 'Please select a client and add at least one valid product.'];
+        $stmt->execute();
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        return [
+            'total_orders' => $result['total_orders'] ?? 0,
+            'total_revenue' => $result['total_revenue'] ?? 0,
+            'pending_orders' => $result['pending_orders'] ?? 0,
+            'production_orders' => $result['production_orders'] ?? 0,
+            'shipped_orders' => $result['shipped_orders'] ?? 0,
+            'today_orders' => $result['today_orders'] ?? 0,
+            'weekly_orders' => $result['weekly_orders'] ?? 0
+        ];
+    } catch (Exception $e) {
+        error_log("Order statistics error: " . $e->getMessage());
+        return [
+            'total_orders' => 0,
+            'total_revenue' => 0,
+            'pending_orders' => 0,
+            'production_orders' => 0,
+            'shipped_orders' => 0,
+            'today_orders' => 0,
+            'weekly_orders' => 0
+        ];
     }
 }
 
-// --- Get data for display ---
-$customers = getCustomers(); // From database
-$products = getProducts();   // From database  
-$orders = getOrders();       // From database
+function calculateOrderTotals($items, $shippingMethod, $taxRate = 10) {
+    $subtotal = 0;
+    
+    foreach ($items as $item) {
+        $quantity = intval($item['quantity'] ?? 0);
+        $unitPrice = floatval($item['unit_price'] ?? 0);
+        $subtotal += $quantity * $unitPrice;
+    }
+    
+    // Calculate shipping
+    $shippingCost = 0;
+    switch ($shippingMethod) {
+        case 'Express':
+            $shippingCost = 25;
+            break;
+        case 'Overnight':
+            $shippingCost = 50;
+            break;
+        case 'Pickup':
+            $shippingCost = 0;
+            break;
+        default: // Standard
+            $shippingCost = 10;
+    }
+    
+    // Calculate tax
+    $taxAmount = $subtotal * ($taxRate / 100);
+    
+    // Calculate total
+    $total = $subtotal + $taxAmount + $shippingCost;
+    
+    return [
+        'subtotal' => $subtotal,
+        'tax_rate' => $taxRate,
+        'tax_amount' => $taxAmount,
+        'shipping_cost' => $shippingCost,
+        'total' => $total
+    ];
+}
+
+// ==========================================
+// REQUEST HANDLING
+// ==========================================
+
+// Handle ORDER CREATION
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_order'])) {
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid security token.'];
+        header('Location: orders.php');
+        exit;
+    }
+
+    $customerId = sanitize_input($_POST['customer_id']);
+    $poDate = sanitize_input($_POST['po_date']);
+    $poNumber = sanitize_input($_POST['po_number'] ?? '');
+    
+    // Validation
+    if (empty($customerId) || empty($poDate)) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Customer and PO Date are required.'];
+        header('Location: orders.php');
+        exit;
+    }
+
+    $conn = getDbConnection();
+    
+    try {
+        $conn->beginTransaction();
+
+        // 1. Prepare Order Data
+        $orderIdStr = generateNextOrderIdStr();
+        $deliveryDate = !empty($_POST['delivery_date']) ? $_POST['delivery_date'] : null;
+        
+        // Calculate Due Date logic
+        $days = 30;
+        if (isset($_POST['payment_terms']) && preg_match('/Net (\d+)/', $_POST['payment_terms'], $matches)) {
+            $days = intval($matches[1]);
+        }
+        $dueDate = date('Y-m-d', strtotime($poDate . " + $days days"));
+
+        // 2. Insert Order Header
+        $stmt = $conn->prepare("
+            INSERT INTO orders 
+            (order_id, customer_id, po_number, po_date, delivery_date, due_date, status, priority, 
+             payment_terms, shipping_method, notes, created_by, total_amount) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        ");
+        
+        $stmt->execute([
+            $orderIdStr,
+            $customerId,
+            $poNumber,
+            $poDate,
+            $deliveryDate,
+            $dueDate,
+            'Pending',
+            $_POST['priority'] ?? 'normal',
+            $_POST['payment_terms'] ?? 'Net 30',
+            $_POST['shipping_method'] ?? 'Standard',
+            $_POST['order_notes'] ?? '',
+            $_SESSION['user_id'] ?? 0
+        ]);
+        
+        $internalOrderId = $conn->lastInsertId();
+        $allItems = [];
+
+        // 3. Process Existing Products
+        if (!empty($_POST['product_sno'])) {
+            $files = !empty($_FILES['drawing_file_existing']) ? rearrangeFileArray($_FILES['drawing_file_existing']) : [];
+            
+            foreach ($_POST['product_sno'] as $idx => $sNo) {
+                if (empty($sNo)) continue;
+                
+                $qty = intval($_POST['quantity'][$idx] ?? 0);
+                if ($qty <= 0) continue;
+                
+                // Fetch product details for name/dims
+                $pStmt = $conn->prepare("SELECT * FROM products WHERE serial_no = ?");
+                $pStmt->execute([$sNo]);
+                $product = $pStmt->fetch(PDO::FETCH_ASSOC);
+                
+                if (!$product) {
+                    throw new Exception("Product with serial number {$sNo} not found");
+                }
+                
+                $price = floatval($_POST['custom_price'][$idx] ?? $product['price'] ?? 0);
+                $rowTotal = $qty * $price;
+                
+                // Upload File
+                $fileData = isset($files[$idx]) ? handleUpload($files[$idx], $orderIdStr, $sNo) : ['filename'=>'', 'original'=>''];
+
+                // Insert Item
+                $iStmt = $conn->prepare("
+                    INSERT INTO order_items 
+                    (order_id, product_id, serial_no, name, dimensions, description, quantity, 
+                     unit_price, total_price, item_status, drawing_filename, original_filename)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)
+                ");
+                
+                $iStmt->execute([
+                    $internalOrderId,
+                    $product['id'] ?? null,
+                    $sNo,
+                    $product['name'] ?? 'Unknown',
+                    $_POST['product_dimensions'][$idx] ?? $product['dimensions'] ?? '',
+                    $_POST['product_description'][$idx] ?? '',
+                    $qty,
+                    $price,
+                    $rowTotal,
+                    $fileData['filename'],
+                    $fileData['original']
+                ]);
+                
+                $allItems[] = [
+                    'quantity' => $qty,
+                    'unit_price' => $price,
+                    'total_price' => $rowTotal
+                ];
+                
+                // Update Stock if product exists in catalog
+                if ($product) {
+                    $updateStmt = $conn->prepare("UPDATE products SET stock_quantity = stock_quantity - ? WHERE serial_no = ?");
+                    $updateStmt->execute([$qty, $sNo]);
+                }
+            }
+        }
+
+        // 4. Process Manual Products
+        if (!empty($_POST['manual_product_name'])) {
+            $files = !empty($_FILES['drawing_file_manual']) ? rearrangeFileArray($_FILES['drawing_file_manual']) : [];
+            
+            foreach ($_POST['manual_product_name'] as $idx => $name) {
+                if (empty($name)) continue;
+                
+                $qty = intval($_POST['manual_quantity'][$idx] ?? 0);
+                if ($qty <= 0) continue;
+                
+                $price = floatval($_POST['manual_price'][$idx] ?? 0);
+                $rowTotal = $qty * $price;
+                
+                $manualSNo = 'MAN-' . uniqid();
+                
+                // Upload File
+                $fileData = isset($files[$idx]) ? handleUpload($files[$idx], $orderIdStr, $manualSNo) : ['filename'=>'', 'original'=>''];
+
+                // Insert Item
+                $iStmt = $conn->prepare("
+                    INSERT INTO order_items 
+                    (order_id, product_id, serial_no, name, dimensions, description, quantity, 
+                     unit_price, total_price, item_status, drawing_filename, original_filename)
+                    VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)
+                ");
+                
+                $iStmt->execute([
+                    $internalOrderId,
+                    $manualSNo,
+                    $name,
+                    $_POST['manual_product_dimensions'][$idx] ?? '',
+                    $_POST['manual_product_description'][$idx] ?? '',
+                    $qty,
+                    $price,
+                    $rowTotal,
+                    $fileData['filename'],
+                    $fileData['original']
+                ]);
+                
+                $allItems[] = [
+                    'quantity' => $qty,
+                    'unit_price' => $price,
+                    'total_price' => $rowTotal
+                ];
+            }
+        }
+
+        // 5. Calculate and Update Order Total
+        if (!empty($allItems)) {
+            $totals = calculateOrderTotals($allItems, $_POST['shipping_method'] ?? 'Standard');
+            
+            $updateStmt = $conn->prepare("
+                UPDATE orders SET 
+                total_amount = ?,
+                shipping_cost = ?,
+                tax_rate = ?
+                WHERE id = ?
+            ");
+            
+            $updateStmt->execute([
+                $totals['total'],
+                $totals['shipping_cost'],
+                $totals['tax_rate'],
+                $internalOrderId
+            ]);
+        }
+
+        $conn->commit();
+        
+        logActivity("Order Created", "Order $orderIdStr created by " . ($_SESSION['username'] ?? 'User'));
+        $_SESSION['message'] = ['type' => 'success', 'text' => "Order $orderIdStr created successfully!"];
+        
+        // Redirect to success state
+        header("Location: orders.php?success=" . urlencode($orderIdStr));
+        exit;
+
+    } catch (Exception $e) {
+        $conn->rollBack();
+        error_log("Order creation error: " . $e->getMessage());
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Error creating order: ' . $e->getMessage()];
+    }
+    
+    header('Location: orders.php');
+    exit;
+}
+
+// Handle ORDER UPDATE
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_order'])) {
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid security token.'];
+        header('Location: orders.php');
+        exit;
+    }
+
+    $orderId = sanitize_input($_POST['order_id']);
+    $status = sanitize_input($_POST['status']);
+
+    try {
+        $conn = getDbConnection();
+        $stmt = $conn->prepare("UPDATE orders SET status = ? WHERE order_id = ?");
+        
+        if ($stmt->execute([$status, $orderId])) {
+            $_SESSION['message'] = ['type' => 'success', 'text' => "Order $orderId updated successfully!"];
+            logActivity("Order Updated", "Order $orderId status changed to $status");
+        } else {
+            $_SESSION['message'] = ['type' => 'error', 'text' => 'Failed to update order.'];
+        }
+    } catch (Exception $e) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Error: ' . $e->getMessage()];
+    }
+
+    header('Location: orders.php');
+    exit;
+}
+
+// Handle ORDER DELETE
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_order'])) {
+    if (!isset($_POST['csrf_token']) || !verifyCsrfToken($_POST['csrf_token'])) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Invalid security token.'];
+        header('Location: orders.php');
+        exit;
+    }
+
+    $orderId = sanitize_input($_POST['order_id']);
+
+    try {
+        $conn = getDbConnection();
+        
+        // Get order items to restore stock
+        $itemsStmt = $conn->prepare("
+            SELECT oi.serial_no, oi.quantity, p.id 
+            FROM order_items oi 
+            LEFT JOIN products p ON oi.serial_no = p.serial_no 
+            WHERE oi.order_id = (SELECT id FROM orders WHERE order_id = ?)
+        ");
+        $itemsStmt->execute([$orderId]);
+        $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Restore stock for catalog products
+        foreach ($items as $item) {
+            if ($item['id']) {
+                $restoreStmt = $conn->prepare("UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?");
+                $restoreStmt->execute([$item['quantity'], $item['id']]);
+            }
+        }
+        
+        // Delete the order (cascade will delete order_items)
+        $stmt = $conn->prepare("DELETE FROM orders WHERE order_id = ?");
+        
+        if ($stmt->execute([$orderId])) {
+            $_SESSION['message'] = ['type' => 'success', 'text' => "Order $orderId deleted successfully!"];
+            logActivity("Order Deleted", "Order $orderId deleted");
+        } else {
+            $_SESSION['message'] = ['type' => 'error', 'text' => 'Failed to delete order.'];
+        }
+    } catch (Exception $e) {
+        $_SESSION['message'] = ['type' => 'error', 'text' => 'Error: ' . $e->getMessage()];
+    }
+
+    header('Location: orders.php');
+    exit;
+}
+
+// ==========================================
+// DATA FETCHING FOR DISPLAY
+// ==========================================
+
+$conn = getDbConnection();
+
+// Fetch Customers
+$customers = $conn->query("SELECT * FROM customers WHERE status = 'active' ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+
+// Fetch Products
+$products = $conn->query("SELECT * FROM products WHERE stock_quantity > 0 ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+
+// Get parameters for filtering
+$search = $_GET['search'] ?? '';
+$statusFilter = $_GET['status'] ?? '';
+$customerFilter = $_GET['customer'] ?? '';
+$page = isset($_GET['page']) ? max(1, intval($_GET['page'])) : 1;
+$perPage = 20;
+
+// Fetch orders with filters
+$ordersData = getOrdersEnhanced($search, $statusFilter, $customerFilter, $page, $perPage);
+$orders = $ordersData['orders'];
+$totalOrders = $ordersData['total'];
+$totalPages = ceil($totalOrders / $perPage);
+
+// Fetch Recent Orders (For Dashboard)
+$recentOrders = $conn->query("
+    SELECT o.*, c.name as customer_name 
+    FROM orders o 
+    LEFT JOIN customers c ON o.customer_id = c.id 
+    ORDER BY o.created_at DESC 
+    LIMIT 5
+")->fetchAll(PDO::FETCH_ASSOC);
+
+// Fetch Stats
+$orderStats = getOrderStatistics();
+
+$totalOrdersCount = $orderStats['total_orders'] ?? 0;
+$totalRevenue = $orderStats['total_revenue'] ?? 0;
+$pendingOrders = $orderStats['pending_orders'] ?? 0;
+$todayOrders = $orderStats['today_orders'] ?? 0;
+
+$csrfToken = generateCsrfToken();
 $today = date('Y-m-d');
 
-// Calculate stats for dashboard
-$totalOrders = count($orders);
-$totalCustomers = count($customers);
-$totalProducts = count($products);
+// Helper to map Customer IDs to Names for the Recent List
+$customerMap = [];
+foreach($customers as $c) { 
+    $customerMap[$c['id']] = $c['name']; 
+}
 
-// Get recent orders for sidebar
-$recentOrders = array_slice(array_reverse($orders), 0, 5);
-$customerMap = array_column($customers, 'name', 'id');
+// Success order ID for highlighting
+$successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : null;
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Order Management - Alphasonix CRM</title>
+    <title>Order Management - Alphasonix</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
     <style>
-        :root {
-            --primary: #4361ee;
-            --primary-light: #4895ef;
-            --secondary: #3f37c9;
-            --success: #4cc9f0;
-            --info: #4895ef;
-            --warning: #f72585;
-            --danger: #e63946;
-            --light: #f8f9fa;
-            --dark: #212529;
-            --gray: #6c757d;
-            --light-gray: #e9ecef;
-            --border-color: #dee2e6;
-            --card-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
-            --card-shadow-hover: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+        :root { 
+            --primary: #4361ee; 
+            --light: #f8f9fa; 
+            --border-color: #dee2e6; 
         }
-        
-        body {
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-            background-color: #f5f7fb;
-            color: #495057;
+        body { 
+            background-color: #f5f7fb; 
+            font-family: 'Segoe UI', sans-serif; 
         }
-        
-        .dashboard-header {
-            background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
-            border-radius: 0.75rem;
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
-            box-shadow: var(--card-shadow);
-            border-left: 4px solid var(--primary);
+        .dashboard-header { 
+            background: white; 
+            border-radius: 0.75rem; 
+            padding: 1.5rem; 
+            margin-bottom: 1.5rem; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05); 
         }
-        
-        .content-card {
-            background: white;
-            border-radius: 0.75rem;
-            box-shadow: var(--card-shadow);
-            border: none;
-            margin-bottom: 1.5rem;
-            overflow: hidden;
-            transition: all 0.3s ease;
+        .stat-card { 
+            background: white; 
+            border-radius: 0.75rem; 
+            padding: 1.5rem; 
+            border: none; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05); 
+            height: 100%; 
         }
-        
-        .content-card:hover {
-            box-shadow: var(--card-shadow-hover);
+        .stat-value { 
+            font-size: 2rem; 
+            font-weight: 700; 
+            color: #212529; 
         }
-        
-        .card-header-custom {
-            background: white;
-            border-bottom: 1px solid var(--border-color);
-            padding: 1.25rem 1.5rem;
+        .content-card { 
+            background: white; 
+            border-radius: 0.75rem; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05); 
+            margin-bottom: 1.5rem; 
         }
-        
-        .card-body-custom {
-            padding: 1.5rem;
-        }
-        
-        .form-control:focus {
-            border-color: var(--primary);
-            box-shadow: 0 0 0 0.2rem rgba(67, 97, 238, 0.25);
-        }
-        
-        .btn-primary {
-            background-color: var(--primary);
-            border-color: var(--primary);
-        }
-        
-        .btn-primary:hover {
-            background-color: var(--secondary);
-            border-color: var(--secondary);
-        }
-        
-        .stat-card {
-            background: white;
-            border-radius: 0.75rem;
-            padding: 1.25rem;
-            box-shadow: var(--card-shadow);
-            border: none;
-            transition: all 0.3s ease;
-        }
-        
-        .stat-card:hover {
-            transform: translateY(-2px);
-            box-shadow: var(--card-shadow-hover);
-        }
-        
-        .product-entry {
-            border: 1px solid var(--border-color);
-            border-radius: 0.5rem;
-            padding: 1rem;
-            margin-bottom: 1rem;
+        .card-header-custom { 
+            padding: 1.25rem; 
+            border-bottom: 1px solid var(--border-color); 
+            font-weight: 600; 
             background: var(--light);
         }
-        
-        .product-entry-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1rem;
+        .card-body-custom { 
+            padding: 1.5rem; 
         }
-        
-        .product-type-badge {
-            background: var(--primary);
-            color: white;
+        .product-entry { 
+            background: #f9f9f9; 
+            border: 1px solid #eee; 
+            border-radius: 8px; 
+            padding: 15px; 
+            margin-bottom: 15px; 
+            position: relative; 
+        }
+        .remove-btn { 
+            position: absolute; 
+            top: 10px; 
+            right: 10px; 
+        }
+        .order-row.new-entry { 
+            animation: highlight 2s ease; 
+        }
+        @keyframes highlight {
+            0% { background-color: rgba(67, 97, 238, 0.2); }
+            100% { background-color: transparent; }
+        }
+        .status-badge {
             padding: 0.25rem 0.75rem;
-            border-radius: 1rem;
+            border-radius: 50px;
             font-size: 0.75rem;
-            font-weight: 500;
-        }
-        
-        .product-form-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1rem;
-        }
-        
-        .product-form-grid .full-width {
-            grid-column: 1 / -1;
-        }
-        
-        .file-upload-wrapper {
-            position: relative;
-        }
-        
-        .file-upload-label {
-            display: block;
-            border: 2px dashed var(--border-color);
-            border-radius: 0.5rem;
-            padding: 1.5rem;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-        
-        .file-upload-label:hover {
-            border-color: var(--primary);
-            background: rgba(67, 97, 238, 0.05);
-        }
-        
-        .timeline-display {
-            padding: 0.5rem 1rem;
-            border-radius: 0.375rem;
-            font-weight: 500;
-            text-align: center;
-        }
-        
-        .timeline-normal {
-            background: rgba(76, 201, 240, 0.1);
-            color: #0c5460;
-            border: 1px solid rgba(76, 201, 240, 0.3);
-        }
-        
-        .timeline-warning {
-            background: rgba(247, 37, 133, 0.1);
-            color: #721c24;
-            border: 1px solid rgba(247, 37, 133, 0.3);
-        }
-        
-        .timeline-urgent {
-            background: rgba(230, 57, 70, 0.1);
-            color: #721c24;
-            border: 1px solid rgba(230, 57, 70, 0.3);
-        }
-        
-        .timeline-overdue {
-            background: rgba(230, 57, 70, 0.2);
-            color: #721c24;
-            border: 1px solid rgba(230, 57, 70, 0.5);
-        }
-        
-        .recent-order-item {
-            display: flex;
-            align-items: center;
-            padding: 0.75rem;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .recent-order-item:last-child {
-            border-bottom: none;
-        }
-        
-        .order-avatar {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            background: var(--primary);
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
             font-weight: 600;
-            margin-right: 0.75rem;
-            font-size: 1.2rem;
+        }
+        .status-pending { background-color: #fff3cd; color: #856404; }
+        .status-sourcing { background-color: #ffeaa7; color: #856404; }
+        .status-production { background-color: #d4edda; color: #155724; }
+        .status-qc { background-color: #cce7ff; color: #004085; }
+        .status-packaging { background-color: #e2e3e5; color: #383d41; }
+        .status-shipped { background-color: #d1ecf1; color: #0c5460; }
+        
+        .main-content {
+            margin-left: 280px;
+            padding: 2rem;
+            transition: margin-left 0.3s ease;
         }
         
-        .order-info {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .order-info strong {
-            font-size: 0.875rem;
-            color: var(--dark);
-        }
-        
-        .order-info span {
-            font-size: 0.75rem;
-            color: var(--gray);
-        }
-        
-        .order-status {
-            margin-left: auto;
-        }
-        
-        .quick-actions-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 0.5rem;
-        }
-        
-        .quick-action-card {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 1rem;
-            border: 1px solid var(--border-color);
-            border-radius: 0.5rem;
-            text-decoration: none;
-            color: var(--dark);
-            transition: all 0.3s ease;
-        }
-        
-        .quick-action-card:hover {
-            background: var(--primary);
-            color: white;
-            text-decoration: none;
-            transform: translateY(-2px);
-        }
-        
-        .action-icon {
-            font-size: 1.5rem;
-            margin-bottom: 0.5rem;
-        }
-        
-        /* Dimension Selection Styles */
-        .dimension-type-selector {
-            margin-bottom: 1rem;
-        }
-        
-        .dimension-inputs {
-            display: none;
-        }
-        
-        .dimension-inputs.active {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-            gap: 0.5rem;
-        }
-        
-        .dimension-input-group {
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .dimension-input-group label {
-            font-size: 0.875rem;
-            font-weight: 500;
-            color: var(--gray);
-            margin-bottom: 0.25rem;
-        }
-        
-        .dimension-result {
-            margin-top: 0.5rem;
-            padding: 0.5rem;
-            background: var(--light);
-            border-radius: 0.375rem;
-            font-family: monospace;
-            font-size: 0.875rem;
-            color: var(--dark);
-            border: 1px solid var(--border-color);
-        }
-        
-        .dimension-result:empty {
-            display: none;
-        }
-        
-        .file-preview-container {
-            margin-top: 0.5rem;
-            padding: 0.5rem;
-            background: var(--light);
-            border-radius: 0.375rem;
-        }
-        
-        .selected-file-info {
-            display: flex;
-            align-items: center;
-        }
-        
-        .file-icon {
-            margin-right: 0.5rem;
-            font-size: 1.5rem;
-        }
-        
-        .file-details {
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .file-name {
-            font-weight: 500;
-            color: var(--dark);
-        }
-        
-        .file-size {
-            color: var(--gray);
-            font-size: 0.875rem;
-        }
-        
-        .file-upload-content {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        
-        .file-upload-content i {
-            font-size: 2rem;
-            color: var(--gray);
-        }
-        
-        .file-upload-text {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-        
-        .file-upload-title {
-            font-weight: 500;
-            color: var(--dark);
-        }
-        
-        .file-upload-subtitle {
-            font-size: 0.875rem;
-            color: var(--gray);
+        @media (max-width: 1024px) {
+            .main-content {
+                margin-left: 0;
+            }
         }
     </style>
 </head>
@@ -497,730 +712,654 @@ $customerMap = array_column($customers, 'name', 'id');
     <?php include 'sidebar.php'; ?>
 
     <div class="main-content">
-        <div class="container-fluid py-4">
-            <?php if (isset($_SESSION['message'])): ?>
-                <?php 
-                $messageType = $_SESSION['message']['type'];
-                $alertClass = $messageType === 'success' ? 'alert-success' : 'alert-danger';
-                echo "<div class='alert $alertClass alert-dismissible fade show' role='alert'>" .
-                    $_SESSION['message']['text'] .
-                    '<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>' .
-                    "</div>";
-                unset($_SESSION['message']);
-                ?>
-            <?php endif; ?>
+        
+        <!-- Messages -->
+        <?php if (isset($_SESSION['message'])): ?>
+            <div class="alert alert-<?= $_SESSION['message']['type'] == 'success' ? 'success' : 'danger' ?> alert-dismissible fade show">
+                <?= $_SESSION['message']['text'] ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            <?php unset($_SESSION['message']); ?>
+        <?php endif; ?>
 
-            <div class="dashboard-header">
-                <div class="d-flex justify-content-between align-items-start">
-                    <div>
-                        <h1 class="h3 mb-2">
-                            <i class="bi bi-cart-plus me-2"></i>Order Management
-                        </h1>
-                        <p class="text-muted mb-0">Create and manage customer orders with real-time tracking</p>
-                    </div>
-                    <div class="text-end">
-                        <div class="badge bg-light text-dark p-2">
-                            <i class="bi bi-calendar3 me-1"></i> <?= date('l, F j, Y') ?>
-                        </div>
+        <!-- Success Overlay -->
+        <?php if (isset($_GET['success'])): ?>
+            <div class="alert alert-success">
+                <h4><i class="bi bi-check-circle"></i> Success!</h4>
+                <p>Order <strong><?= htmlspecialchars($_GET['success']) ?></strong> has been created.</p>
+                <a href="orders.php" class="btn btn-sm btn-success">Create Another</a>
+            </div>
+        <?php endif; ?>
+
+        <div class="dashboard-header">
+            <h3><i class="bi bi-cart"></i> Order Management</h3>
+        </div>
+
+        <!-- Stats -->
+        <div class="row g-3 mb-4">
+            <div class="col-md-3">
+                <div class="stat-card">
+                    <div class="text-muted">Total Orders</div>
+                    <div class="stat-value"><?= number_format($totalOrdersCount) ?></div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card">
+                    <div class="text-muted">Revenue</div>
+                    <div class="stat-value">$<?= number_format($totalRevenue, 2) ?></div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card">
+                    <div class="text-muted">Pending</div>
+                    <div class="stat-value"><?= number_format($pendingOrders) ?></div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card">
+                    <div class="text-muted">Today</div>
+                    <div class="stat-value"><?= number_format($todayOrders) ?></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <!-- Create Order Form -->
+            <div class="col-lg-8">
+                <div class="content-card">
+                    <div class="card-header-custom">Create New Order</div>
+                    <div class="card-body-custom">
+                        <form action="orders.php" method="POST" enctype="multipart/form-data" id="orderForm">
+                            <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                            <input type="hidden" name="create_order" value="1">
+
+                            <div class="row g-3 mb-4">
+                                <div class="col-md-6">
+                                    <label class="form-label">Client <span class="text-danger">*</span></label>
+                                    <select name="customer_id" class="form-select" required>
+                                        <option value="">Select Client</option>
+                                        <?php foreach ($customers as $c): ?>
+                                            <option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['name']) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">PO Date <span class="text-danger">*</span></label>
+                                    <input type="date" name="po_date" class="form-control" value="<?= $today ?>" required>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">PO Number</label>
+                                    <input type="text" name="po_number" class="form-control" placeholder="PO-12345">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">Delivery Date</label>
+                                    <input type="date" name="delivery_date" class="form-control">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Payment Terms</label>
+                                    <select name="payment_terms" class="form-select">
+                                        <option value="Net 30">Net 30</option>
+                                        <option value="Net 15">Net 15</option>
+                                        <option value="Due on Receipt">Due on Receipt</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Shipping</label>
+                                    <select name="shipping_method" id="shipping_method" class="form-select" onchange="calcTotal()">
+                                        <option value="Standard">Standard ($10)</option>
+                                        <option value="Express">Express ($25)</option>
+                                        <option value="Overnight">Overnight ($50)</option>
+                                        <option value="Pickup">Pickup ($0)</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Priority</label>
+                                    <select name="priority" class="form-select">
+                                        <option value="normal">Normal</option>
+                                        <option value="high">High</option>
+                                        <option value="urgent">Urgent</option>
+                                    </select>
+                                </div>
+                                <div class="col-12">
+                                    <label class="form-label">Notes</label>
+                                    <textarea name="order_notes" class="form-control" rows="2" placeholder="Any special instructions..."></textarea>
+                                </div>
+                            </div>
+
+                            <h5 class="mb-3">Products</h5>
+                            
+                            <!-- Product Containers -->
+                            <div id="productContainer">
+                                <!-- Default Empty Manual Item -->
+                                <div class="product-entry manual-entry">
+                                    <button type="button" class="btn-close remove-btn" onclick="removeItem(this)"></button>
+                                    <div class="row g-2">
+                                        <div class="col-md-4">
+                                            <label class="small">Product Name <span class="text-danger">*</span></label>
+                                            <input type="text" name="manual_product_name[]" class="form-control form-control-sm" required>
+                                        </div>
+                                        <div class="col-md-2">
+                                            <label class="small">Qty <span class="text-danger">*</span></label>
+                                            <input type="number" name="manual_quantity[]" class="form-control form-control-sm qty" value="1" min="1" onchange="calcTotal()" required>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <label class="small">Price ($) <span class="text-danger">*</span></label>
+                                            <input type="number" name="manual_price[]" class="form-control form-control-sm price" value="0" step="0.01" onchange="calcTotal()" required>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <label class="small">Drawing</label>
+                                            <input type="file" name="drawing_file_manual[]" class="form-control form-control-sm" accept=".pdf,.jpg,.jpeg,.png,.gif,.doc,.docx">
+                                        </div>
+                                        <div class="col-12">
+                                            <input type="text" name="manual_product_dimensions[]" class="form-control form-control-sm mt-1" placeholder="Dimensions">
+                                            <textarea name="manual_product_description[]" class="form-control form-control-sm mt-1" placeholder="Description" rows="1"></textarea>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="d-flex gap-2 mb-4">
+                                <button type="button" class="btn btn-outline-primary btn-sm" onclick="addManualItem()">
+                                    <i class="bi bi-plus"></i> Add Custom Item
+                                </button>
+                                <button type="button" class="btn btn-outline-dark btn-sm" onclick="addExistingItem()">
+                                    <i class="bi bi-plus"></i> Add Catalog Item
+                                </button>
+                            </div>
+
+                            <!-- Totals -->
+                            <div class="alert alert-light border">
+                                <div class="d-flex justify-content-between">
+                                    <span>Subtotal:</span>
+                                    <strong id="displaySubtotal">$0.00</strong>
+                                </div>
+                                <div class="d-flex justify-content-between">
+                                    <span>Shipping:</span>
+                                    <strong id="displayShipping">$10.00</strong>
+                                </div>
+                                <div class="d-flex justify-content-between">
+                                    <span>Tax (10%):</span>
+                                    <strong id="displayTax">$0.00</strong>
+                                </div>
+                                <div class="d-flex justify-content-between fs-5 mt-2 pt-2 border-top">
+                                    <strong>Total:</strong>
+                                    <strong class="text-primary" id="displayTotal">$0.00</strong>
+                                </div>
+                            </div>
+
+                            <div class="text-end">
+                                <button type="submit" class="btn btn-primary btn-lg">
+                                    <i class="bi bi-check-circle"></i> Create Order
+                                </button>
+                            </div>
+                        </form>
                     </div>
                 </div>
             </div>
 
-            <div class="row g-3 mb-4">
-                <div class="col-md-4">
-                    <div class="stat-card">
-                        <div class="d-flex align-items-center">
-                            <div class="me-3">
-                                <div class="bg-primary bg-opacity-10 p-3 rounded">
-                                    <i class="bi bi-file-text fs-4 text-primary"></i>
-                                </div>
-                            </div>
-                            <div>
-                                <h5 class="mb-1">Total Orders</h5>
-                                <h2 class="mb-0 text-primary"><?= $totalOrders ?></h2>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="stat-card">
-                        <div class="d-flex align-items-center">
-                            <div class="me-3">
-                                <div class="bg-success bg-opacity-10 p-3 rounded">
-                                    <i class="bi bi-people fs-4 text-success"></i>
-                                </div>
-                            </div>
-                            <div>
-                                <h5 class="mb-1">Active Clients</h5>
-                                <h2 class="mb-0 text-success"><?= $totalCustomers ?></h2>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="stat-card">
-                        <div class="d-flex align-items-center">
-                            <div class="me-3">
-                                <div class="bg-info bg-opacity-10 p-3 rounded">
-                                    <i class="bi bi-box-seam fs-4 text-info"></i>
-                                </div>
-                            </div>
-                            <div>
-                                <h5 class="mb-1">Products</h5>
-                                <h2 class="mb-0 text-info"><?= $totalProducts ?></h2>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="row">
-                <div class="col-lg-8 mb-4">
-                    <div class="content-card">
-                        <div class="card-header-custom">
-                            <div class="d-flex justify-content-between align-items-center">
-                                <h5 class="mb-0">
-                                    <i class="bi bi-plus-circle me-2"></i>Create New Order
-                                </h5>
-                                <span class="badge bg-primary">Step 1: Order Details</span>
-                            </div>
-                        </div>
-                        <div class="card-body-custom">
-                            <form action="orders.php" method="post" enctype="multipart/form-data">
-                                <div class="mb-4">
-                                    <h6 class="mb-3">
-                                        <i class="bi bi-info-circle me-2"></i>Order Information
-                                    </h6>
-                                    <div class="row g-3">
-                                        <div class="col-md-6">
-                                            <label for="customer_id" class="form-label">Client Name</label>
-                                            <select name="customer_id" id="customer_id" class="form-select" required>
-                                                <option value="">-- Choose a Client --</option>
-                                                <?php foreach ($customers as $customer): ?>
-                                                    <option value="<?= htmlspecialchars($customer['id']) ?>">
-                                                        <?= htmlspecialchars($customer['name']) ?>
-                                                    </option>
-                                                <?php endforeach; ?>
-                                            </select>
-                                        </div>
-                                        <div class="col-md-6">
-                                            <label for="po_date" class="form-label">PO Date</label>
-                                            <input type="date" id="po_date" name="po_date" class="form-control" value="<?= $today ?>" required>
-                                        </div>
-                                        <div class="col-md-6">
-                                            <label for="delivery_date" class="form-label">Delivery Date</label>
-                                            <input type="date" id="delivery_date" name="delivery_date" class="form-control"
-                                                onchange="calculateDaysLeft()">
-                                        </div>
-                                        <div class="col-md-6">
-                                            <label class="form-label">Timeline</label>
-                                            <div id="days_remaining" class="timeline-display timeline-normal">
-                                                <span class="timeline-label">Not set</span>
-                                            </div>
-                                        </div>
+            <!-- Recent Orders & Order List -->
+            <div class="col-lg-4">
+                <!-- Recent Orders -->
+                <div class="content-card mb-4">
+                    <div class="card-header-custom">Recent Orders</div>
+                    <div class="list-group list-group-flush">
+                        <?php if (count($recentOrders) > 0): ?>
+                            <?php foreach ($recentOrders as $o): ?>
+                                <div class="list-group-item">
+                                    <div class="d-flex justify-content-between">
+                                        <strong><?= htmlspecialchars($o['order_id']) ?></strong>
+                                        <span class="status-badge status-<?= strtolower(str_replace(' ', '-', $o['status'])) ?>">
+                                            <?= htmlspecialchars($o['status']) ?>
+                                        </span>
                                     </div>
+                                    <small class="text-muted"><?= htmlspecialchars($customerMap[$o['customer_id']] ?? 'Unknown') ?></small>
+                                    <div class="mt-1">$<?= number_format($o['total_amount'], 2) ?></div>
                                 </div>
-
-                                <div class="mb-4">
-                                    <h6 class="mb-3">
-                                        <i class="bi bi-box-seam me-2"></i>Products & Items
-                                    </h6>
-                                    
-                                    <div class="mb-4">
-                                        <div class="d-flex justify-content-between align-items-center mb-3">
-                                            <h6 class="mb-0">
-                                                <i class="bi bi-box me-2"></i>Catalog Products
-                                            </h6>
-                                            <button type="button" id="addExistingProductBtn" class="btn btn-outline-primary btn-sm">
-                                                <i class="bi bi-plus me-1"></i>Add Product
-                                            </button>
-                                        </div>
-                                        <div id="existingProductsContainer">
-                                            <?= renderProductEntry('existing', $products); ?>
-                                        </div>
-                                    </div>
-
-                                    <div class="mb-4">
-                                        <div class="d-flex justify-content-between align-items-center mb-3">
-                                            <h6 class="mb-0">
-                                                <i class="bi bi-pencil me-2"></i>Custom Products
-                                            </h6>
-                                            <button type="button" id="addManualProductBtn" class="btn btn-outline-primary btn-sm">
-                                                <i class="bi bi-plus me-1"></i>Add Custom
-                                            </button>
-                                        </div>
-                                        <div id="manualProductsContainer">
-                                            <?= renderProductEntry('manual'); ?>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div class="d-grid gap-2 d-md-flex justify-content-md-end">
-                                    <button type="submit" name="create_order" class="btn btn-primary">
-                                        <i class="bi bi-rocket-takeoff me-2"></i>
-                                        Create Order & Start Pipeline
-                                    </button>
-                                    <button type="reset" class="btn btn-secondary">
-                                        <i class="bi bi-arrow-clockwise me-2"></i>
-                                        Reset Form
-                                    </button>
-                                </div>
-                            </form>
-                        </div>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <div class="p-3 text-center text-muted">No orders yet.</div>
+                        <?php endif; ?>
                     </div>
                 </div>
 
-                <div class="col-lg-4">
-                    <div class="content-card mb-4">
-                        <div class="card-header-custom">
-                            <div class="d-flex justify-content-between align-items-center">
-                                <h5 class="mb-0">
-                                    <i class="bi bi-clock-history me-2"></i>Recent Orders
-                                </h5>
-                                <span class="badge bg-primary">Last 5</span>
+                <!-- Order Search & Filter -->
+                <div class="content-card">
+                    <div class="card-header-custom">Order Search</div>
+                    <div class="card-body-custom">
+                        <form method="get" action="orders.php">
+                            <div class="mb-3">
+                                <label class="form-label">Search</label>
+                                <input type="text" name="search" class="form-control" value="<?= htmlspecialchars($search) ?>" placeholder="Order ID, PO Number, Customer...">
                             </div>
-                        </div>
-                        <div class="card-body-custom p-0">
-                            <div class="recent-orders-list">
-                                <?php if (empty($recentOrders)): ?>
-                                    <div class="text-center py-4 text-muted">
-                                        <i class="bi bi-inbox fs-1"></i>
-                                        <p class="mt-2 mb-0">No Orders Yet</p>
-                                    </div>
-                                <?php else: ?>
-                                    <?php foreach ($recentOrders as $order): ?>
-                                        <div class="recent-order-item">
-                                            <div class="order-avatar">
-                                                <?= strtoupper(substr($customerMap[$order['customer_id']] ?? 'C', 0, 1)) ?>
-                                            </div>
-                                            <div class="order-info">
-                                                <strong>#<?= htmlspecialchars($order['order_id']) ?></strong>
-                                                <span><?= htmlspecialchars($customerMap[$order['customer_id']] ?? 'Unknown') ?></span>
-                                            </div>
-                                            <div class="order-status">
-                                                <span class="badge bg-secondary"><?= htmlspecialchars($order['status']) ?></span>
-                                            </div>
-                                        </div>
+                            <div class="mb-3">
+                                <label class="form-label">Status</label>
+                                <select name="status" class="form-select">
+                                    <option value="">All Status</option>
+                                    <option value="Pending" <?= $statusFilter === 'Pending' ? 'selected' : '' ?>>Pending</option>
+                                    <option value="Sourcing Material" <?= $statusFilter === 'Sourcing Material' ? 'selected' : '' ?>>Sourcing Material</option>
+                                    <option value="In Production" <?= $statusFilter === 'In Production' ? 'selected' : '' ?>>In Production</option>
+                                    <option value="Ready for QC" <?= $statusFilter === 'Ready for QC' ? 'selected' : '' ?>>Ready for QC</option>
+                                    <option value="QC Completed" <?= $statusFilter === 'QC Completed' ? 'selected' : '' ?>>QC Completed</option>
+                                    <option value="Packaging" <?= $statusFilter === 'Packaging' ? 'selected' : '' ?>>Packaging</option>
+                                    <option value="Ready for Dispatch" <?= $statusFilter === 'Ready for Dispatch' ? 'selected' : '' ?>>Ready for Dispatch</option>
+                                    <option value="Shipped" <?= $statusFilter === 'Shipped' ? 'selected' : '' ?>>Shipped</option>
+                                </select>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Customer</label>
+                                <select name="customer" class="form-select">
+                                    <option value="">All Customers</option>
+                                    <?php foreach ($customers as $c): ?>
+                                        <option value="<?= $c['id'] ?>" <?= $customerFilter == $c['id'] ? 'selected' : '' ?>>
+                                            <?= htmlspecialchars($c['name']) ?>
+                                        </option>
                                     <?php endforeach; ?>
-                                <?php endif; ?>
+                                </select>
                             </div>
-                        </div>
-                    </div>
-
-                    <div class="content-card">
-                        <div class="card-header-custom">
-                            <h5 class="mb-0">
-                                <i class="bi bi-lightning me-2"></i>Quick Actions
-                            </h5>
-                        </div>
-                        <div class="card-body-custom">
-                            <div class="quick-actions-grid">
-                                <a href="pipeline.php" class="quick-action-card">
-                                    <div class="action-icon"><i class="bi bi-diagram-3"></i></div>
-                                    <span>View Pipeline</span>
+                            <button type="submit" class="btn btn-primary w-100">
+                                <i class="bi bi-search"></i> Search Orders
+                            </button>
+                            <?php if (!empty($search) || !empty($statusFilter) || !empty($customerFilter)): ?>
+                                <a href="orders.php" class="btn btn-outline-secondary w-100 mt-2">
+                                    <i class="bi bi-x"></i> Clear Filters
                                 </a>
-                                <a href="customers.php" class="quick-action-card">
-                                    <div class="action-icon"><i class="bi bi-people"></i></div>
-                                    <span>Manage Clients</span>
-                                </a>
-                                <a href="products.php" class="quick-action-card">
-                                    <div class="action-icon"><i class="bi bi-box"></i></div>
-                                    <span>Products</span>
-                                </a>
-                                <a href="home.php" class="quick-action-card">
-                                    <div class="action-icon"><i class="bi bi-speedometer"></i></div>
-                                    <span>Dashboard</span>
-                                </a>
-                            </div>
-                        </div>
+                            <?php endif; ?>
+                        </form>
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <!-- Orders Table -->
+        <?php if (!empty($search) || !empty($statusFilter) || !empty($customerFilter) || $totalOrders > 0): ?>
+        <div class="content-card">
+            <div class="card-header-custom d-flex justify-content-between align-items-center">
+                <span>Order List</span>
+                <span class="badge bg-primary"><?= number_format($totalOrders) ?> orders</span>
+            </div>
+            <div class="card-body-custom">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Order ID</th>
+                                <th>Customer</th>
+                                <th>PO Date</th>
+                                <th>Due Date</th>
+                                <th>Items</th>
+                                <th>Total</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php if (empty($orders)): ?>
+                                <tr>
+                                    <td colspan="8" class="text-center py-4 text-muted">
+                                        <i class="bi bi-inbox" style="font-size: 2rem;"></i>
+                                        <p class="mt-2">No orders found matching your criteria.</p>
+                                    </td>
+                                </tr>
+                            <?php else: ?>
+                                <?php foreach ($orders as $order): ?>
+                                    <tr class="order-row <?= ($successOrderId === $order['order_id']) ? 'new-entry' : '' ?>">
+                                        <td>
+                                            <strong><?= htmlspecialchars($order['order_id']) ?></strong>
+                                            <?php if (!empty($order['po_number'])): ?>
+                                                <br><small class="text-muted">PO: <?= htmlspecialchars($order['po_number']) ?></small>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td><?= htmlspecialchars($order['customer_name']) ?></td>
+                                        <td><?= date('M j, Y', strtotime($order['po_date'])) ?></td>
+                                        <td>
+                                            <?php if ($order['due_date']): ?>
+                                                <?= date('M j, Y', strtotime($order['due_date'])) ?>
+                                                <?php if (strtotime($order['due_date']) < time()): ?>
+                                                    <span class="badge bg-danger ms-1">Overdue</span>
+                                                <?php endif; ?>
+                                            <?php else: ?>
+                                                <span class="text-muted">-</span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <span class="badge bg-secondary"><?= $order['item_count'] ?> items</span>
+                                        </td>
+                                        <td>
+                                            <strong>$<?= number_format($order['total_amount'], 2) ?></strong>
+                                        </td>
+                                        <td>
+                                            <span class="status-badge status-<?= strtolower(str_replace(' ', '-', $order['status'])) ?>">
+                                                <?= htmlspecialchars($order['status']) ?>
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <div class="btn-group btn-group-sm">
+                                                <a href="./order_details.php?order_id=<?= urlencode($order['order_id']) ?>" 
+                                                   class="btn btn-outline-primary" title="View Details">
+                                                    <i class="bi bi-eye"></i>
+                                                </a>
+                                                <button type="button" class="btn btn-outline-warning" 
+                                                        onclick="updateOrderStatus('<?= htmlspecialchars($order['order_id']) ?>')"
+                                                        title="Update Status">
+                                                    <i class="bi bi-pencil"></i>
+                                                </button>
+                                                <button type="button" class="btn btn-outline-danger" 
+                                                        onclick="confirmDelete('<?= htmlspecialchars($order['order_id']) ?>')"
+                                                        title="Delete Order">
+                                                    <i class="bi bi-trash"></i>
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Pagination -->
+                <?php if ($totalPages > 1): ?>
+                    <nav aria-label="Order pagination">
+                        <ul class="pagination justify-content-center">
+                            <?php if ($page > 1): ?>
+                                <li class="page-item">
+                                    <a class="page-link" href="?page=<?= $page - 1 ?>&search=<?= urlencode($search) ?>&status=<?= urlencode($statusFilter) ?>&customer=<?= urlencode($customerFilter) ?>">
+                                        Previous
+                                    </a>
+                                </li>
+                            <?php endif; ?>
+
+                            <?php for ($i = 1; $i <= $totalPages; $i++): ?>
+                                <li class="page-item <?= $i == $page ? 'active' : '' ?>">
+                                    <a class="page-link" href="?page=<?= $i ?>&search=<?= urlencode($search) ?>&status=<?= urlencode($statusFilter) ?>&customer=<?= urlencode($customerFilter) ?>">
+                                        <?= $i ?>
+                                    </a>
+                                </li>
+                            <?php endfor; ?>
+
+                            <?php if ($page < $totalPages): ?>
+                                <li class="page-item">
+                                    <a class="page-link" href="?page=<?= $page + 1 ?>&search=<?= urlencode($search) ?>&status=<?= urlencode($statusFilter) ?>&customer=<?= urlencode($customerFilter) ?>">
+                                        Next
+                                    </a>
+                                </li>
+                            <?php endif; ?>
+                        </ul>
+                    </nav>
+                <?php endif; ?>
+            </div>
+        </div>
+        <?php endif; ?>
+    </div>
+
+    <!-- Update Status Modal -->
+    <div class="modal fade" id="updateStatusModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Update Order Status</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form id="updateStatusForm" method="post">
+                    <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                    <input type="hidden" name="update_order" value="1">
+                    <input type="hidden" name="order_id" id="updateOrderId">
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label class="form-label">New Status</label>
+                            <select name="status" class="form-select" required>
+                                <option value="Pending">Pending</option>
+                                <option value="Sourcing Material">Sourcing Material</option>
+                                <option value="In Production">In Production</option>
+                                <option value="Ready for QC">Ready for QC</option>
+                                <option value="QC Completed">QC Completed</option>
+                                <option value="Packaging">Packaging</option>
+                                <option value="Ready for Dispatch">Ready for Dispatch</option>
+                                <option value="Shipped">Shipped</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Update Status</button>
+                    </div>
+                </form>
             </div>
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    
-    <script>
-    function calculateDaysLeft() {
-        const poDateEl = document.getElementById('po_date');
-        const deliveryDateEl = document.getElementById('delivery_date');
-        const daysRemainingElement = document.getElementById('days_remaining');
-
-        if (!poDateEl.value || !deliveryDateEl.value) {
-            daysRemainingElement.innerHTML = '<span class="timeline-label">Not set</span>';
-            daysRemainingElement.className = "timeline-display timeline-normal";
-            return;
-        }
-
-        const poDate = new Date(poDateEl.value);
-        const deliveryDate = new Date(deliveryDateEl.value);
-        
-        const diffTime = deliveryDate.getTime() - poDate.getTime();
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-        let timelineClass = 'timeline-normal';
-        let icon = '📅';
-
-        if (diffDays < 0) {
-            timelineClass = 'timeline-overdue';
-            icon = '⏰';
-            daysRemainingElement.innerHTML = `<span class="timeline-icon">${icon}</span><span class="timeline-label">Overdue</span>`;
-        } else if (diffDays < 7) {
-            timelineClass = 'timeline-urgent';
-            icon = '⚡';
-            daysRemainingElement.innerHTML = `<span class="timeline-icon">${icon}</span><span class="timeline-label">${diffDays} day${diffDays !== 1 ? 's' : ''}</span>`;
-        } else if (diffDays < 14) {
-            timelineClass = 'timeline-warning';
-            icon = '📋';
-            daysRemainingElement.innerHTML = `<span class="timeline-icon">${icon}</span><span class="timeline-label">${diffDays} days</span>`;
-        } else {
-            timelineClass = 'timeline-normal';
-            icon = '✅';
-            daysRemainingElement.innerHTML = `<span class="timeline-icon">${icon}</span><span class="timeline-label">${diffDays} days</span>`;
-        }
-
-        daysRemainingElement.className = `timeline-display ${timelineClass}`;
-    }
-
-    function handleDimensionTypeChange(selectElement) {
-        const entry = selectElement.closest('.product-entry');
-        const dimensionInputsContainers = entry.querySelectorAll('.dimension-inputs');
-        const selectedType = selectElement.value;
-        const dimensionResult = entry.querySelector('.dimension-result');
-        
-        // Hide all dimension input containers
-        dimensionInputsContainers.forEach(container => {
-            container.classList.remove('active');
-        });
-        
-        // Show the selected type's inputs
-        if (selectedType) {
-            const activeContainer = entry.querySelector(`.dimension-inputs[data-type="${selectedType}"]`);
-            if (activeContainer) {
-                activeContainer.classList.add('active');
-            }
-        }
-        
-        // Clear dimension result
-        dimensionResult.textContent = '';
-        
-        // Clear the hidden dimension input
-        const hiddenDimensionInput = entry.querySelector('.product-dimensions-hidden');
-        if (hiddenDimensionInput) {
-            hiddenDimensionInput.value = '';
-        }
-    }
-
-    function updateDimensionString(entry) {
-        const selectedType = entry.querySelector('.dimension-type-select').value;
-        const dimensionResult = entry.querySelector('.dimension-result');
-        const hiddenDimensionInput = entry.querySelector('.product-dimensions-hidden');
-        
-        if (!selectedType) {
-            dimensionResult.textContent = '';
-            hiddenDimensionInput.value = '';
-            return;
-        }
-        
-        let dimensionString = '';
-        const activeContainer = entry.querySelector(`.dimension-inputs[data-type="${selectedType}"].active`);
-        
-        if (activeContainer) {
-            const inputs = activeContainer.querySelectorAll('input[type="number"]');
-            const values = Array.from(inputs).map(input => input.value || '0');
-            
-            switch(selectedType) {
-                case 'plate':
-                    if (values[0] && values[1] && values[2]) {
-                        dimensionString = `${values[0]} × ${values[1]} × ${values[2]}`;
-                    }
-                    break;
-                case 'pipe':
-                    if (values[0] && values[1] && values[2] && values[3]) {
-                        dimensionString = `L: ${values[0]} × OD: ${values[1]} × ID: ${values[2]} × T: ${values[3]}`;
-                    }
-                    break;
-                case 't-joint':
-                    if (values[0] && values[1] && values[2] && values[3]) {
-                        dimensionString = `${values[0]} × ${values[1]} × ${values[2]} × ${values[3]}`;
-                    }
-                    break;
-                case 'custom':
-                    const customInput = activeContainer.querySelector('input[type="text"]');
-                    dimensionString = customInput.value;
-                    break;
-            }
-        }
-        
-        dimensionResult.textContent = dimensionString || 'Please fill in all dimensions';
-        hiddenDimensionInput.value = dimensionString;
-    }
-
-    function updateDimensions(selectElement) {
-        const selectedOption = selectElement.options[selectElement.selectedIndex];
-        const entry = selectElement.closest('.product-entry');
-        const dimensionTypeSelect = entry.querySelector('.dimension-type-select');
-        
-        if (selectedOption && selectedOption.value) {
-            // You can set a default dimension type based on the product if needed
-            // For now, just reset the dimension selector
-            if (dimensionTypeSelect) {
-                dimensionTypeSelect.value = '';
-                handleDimensionTypeChange(dimensionTypeSelect);
-            }
-        }
-    }
-
-    function previewSelectedFile(inputElement) {
-        const file = inputElement.files[0];
-        const formGroup = inputElement.closest('.form-group');
-        const previewContainer = formGroup.querySelector('.file-preview-container');
-
-        if (file) {
-            const fileNameEl = previewContainer.querySelector('.file-name');
-            const fileSizeEl = previewContainer.querySelector('.file-size');
-            const fileIconEl = previewContainer.querySelector('.file-icon');
-
-            fileNameEl.textContent = file.name;
-            fileSizeEl.textContent = `(${(file.size / 1024).toFixed(1)} KB)`;
-
-            const iconMap = { 'image': '🖼️', 'pdf': '📄', 'dwg': '📐' };
-            let icon = '📎';
-
-            if (file.type.startsWith('image/')) icon = iconMap.image;
-            else if (file.type === 'application/pdf') icon = iconMap.pdf;
-            else if (file.name.toLowerCase().endsWith('.dwg')) icon = iconMap.dwg;
-            
-            fileIconEl.textContent = icon;
-            previewContainer.style.display = 'flex';
-        } else {
-            previewContainer.style.display = 'none';
-        }
-    }
-
-    document.getElementById('addExistingProductBtn').addEventListener('click', function () {
-        const container = document.getElementById('existingProductsContainer');
-        const firstEntry = container.querySelector('.product-entry');
-        if (!firstEntry) return;
-        const newEntry = firstEntry.cloneNode(true);
-
-        const newId = `file_existing_${Date.now()}`;
-        newEntry.querySelector('input[type="file"]').id = newId;
-        newEntry.querySelector('label.file-upload-label').setAttribute('for', newId);
-
-        // Clear the new entry
-        newEntry.querySelector('select').selectedIndex = 0;
-        newEntry.querySelector('.dimension-type-select').selectedIndex = 0;
-        newEntry.querySelectorAll('.dimension-inputs').forEach(container => {
-            container.classList.remove('active');
-            container.querySelectorAll('input').forEach(input => input.value = '');
-        });
-        newEntry.querySelector('.dimension-result').textContent = '';
-        newEntry.querySelector('.product-dimensions-hidden').value = '';
-        newEntry.querySelector('textarea').value = '';
-        newEntry.querySelector('input[type="file"]').value = null;
-        newEntry.querySelector('.file-preview-container').style.display = 'none';
-
-        container.appendChild(newEntry);
-    });
-
-    document.getElementById('addManualProductBtn').addEventListener('click', function () {
-        const container = document.getElementById('manualProductsContainer');
-        const firstEntry = container.querySelector('.product-entry');
-        if (!firstEntry) return;
-        
-        // Count existing entries to create sequential numbering
-        const existingEntries = container.querySelectorAll('.product-entry').length;
-        const newEntryNumber = existingEntries + 1;
-        
-        const newEntry = firstEntry.cloneNode(true);
-        
-        // Update title with numbering
-        const titleBadge = newEntry.querySelector('.product-type-badge');
-        titleBadge.innerHTML = `<i class="bi bi-pencil"></i> Custom Item #${newEntryNumber}`;
-
-        // Generate a unique ID for the file input
-        const newId = `file_manual_${Date.now()}`;
-        newEntry.querySelector('input[type="file"]').id = newId;
-        newEntry.querySelector('label.file-upload-label').setAttribute('for', newId);
-
-        // Clear the new entry
-        newEntry.querySelector('input[name^="manual_product_name"]').value = '';
-        newEntry.querySelector('.dimension-type-select').selectedIndex = 0;
-        newEntry.querySelectorAll('.dimension-inputs').forEach(container => {
-            container.classList.remove('active');
-            container.querySelectorAll('input').forEach(input => input.value = '');
-        });
-        newEntry.querySelector('.dimension-result').textContent = '';
-        newEntry.querySelector('.product-dimensions-hidden').value = '';
-        newEntry.querySelector('textarea').value = '';
-        newEntry.querySelector('input[type="file"]').value = null;
-        newEntry.querySelector('.file-preview-container').style.display = 'none';
-
-        container.appendChild(newEntry);
-        
-        // Update numbering for all entries to ensure they're sequential
-        updateManualProductNumbering();
-    });
-
-    // Function to update numbering of all manual product entries
-    function updateManualProductNumbering() {
-        const container = document.getElementById('manualProductsContainer');
-        const entries = container.querySelectorAll('.product-entry');
-        
-        entries.forEach((entry, index) => {
-            const titleBadge = entry.querySelector('.product-type-badge');
-            titleBadge.innerHTML = `<i class="bi bi-pencil"></i> Custom Item #${index + 1}`;
-        });
-    }
-
-    function removeProduct(button) {
-        const entry = button.closest('.product-entry');
-        const container = entry.parentElement;
-        const isManualContainer = container.id === 'manualProductsContainer';
-
-        if (container.querySelectorAll('.product-entry').length > 1) {
-            entry.remove();
-            // Update numbering if this is a manual product
-            if (isManualContainer) {
-                updateManualProductNumbering();
-            }
-        } else {
-            // If it's the last one, just clear it
-            const inputs = entry.querySelectorAll('input, select, textarea');
-            inputs.forEach(input => {
-                if (input.type === 'file') {
-                    input.value = null;
-                } else if (input.tagName === 'SELECT') {
-                    input.selectedIndex = 0;
-                } else {
-                    input.value = '';
-                }
-            });
-            
-            // Hide dimension inputs
-            const dimensionInputs = entry.querySelectorAll('.dimension-inputs');
-            dimensionInputs.forEach(container => {
-                container.classList.remove('active');
-            });
-            
-            // Clear dimension result
-            const dimensionResult = entry.querySelector('.dimension-result');
-            if (dimensionResult) {
-                dimensionResult.textContent = '';
-            }
-            
-            entry.querySelector('.file-preview-container').style.display = 'none';
-            
-            // Reset numbering if it's a manual product
-            if (isManualContainer) {
-                const titleBadge = entry.querySelector('.product-type-badge');
-                titleBadge.innerHTML = '<i class="bi bi-pencil"></i> Custom Item #1';
-            }
-        }
-    }
-
-    document.addEventListener('DOMContentLoaded', function() {
-        document.getElementById('delivery_date').addEventListener('change', calculateDaysLeft);
-        document.getElementById('po_date').addEventListener('change', calculateDaysLeft);
-        calculateDaysLeft();
-
-        document.querySelectorAll('.product-select').forEach(select => {
-            updateDimensions(select);
-        });
-
-        const alerts = document.querySelectorAll('.alert');
-        alerts.forEach(alert => {
-            setTimeout(() => {
-                const bsAlert = new bootstrap.Alert(alert);
-                bsAlert.close();
-            }, 5000);
-        });
-    });
-    </script>
-</body>
-</html>
-
-<?php
-/**
- * Renders the HTML for a single product entry form.
- */
-function renderProductEntry($type, $products = null) {
-    $isExisting = ($type === 'existing');
-    $prefix = $isExisting ? '' : 'manual_';
-    $class = $isExisting ? 'existing-product-entry' : 'manual-product-entry';
-    $uniqueFileId = 'file_' . $type . '_' . uniqid();
-    $uniqueDimensionId = 'dim_' . $type . '_' . uniqid();
-
-    ob_start();
-    ?>
-    <div class="product-entry <?= $class ?>">
-        <div class="product-entry-header">
-            <div class="product-type-badge">
-                <i class="bi <?= $isExisting ? 'bi-box' : 'bi-pencil' ?>"></i>
-                <?= $isExisting ? 'Catalog Item' : 'Custom Item #1' ?>
+    <!-- Delete Confirmation Modal -->
+    <div class="modal fade" id="deleteModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Confirm Deletion</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form id="deleteForm" method="post">
+                    <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                    <input type="hidden" name="delete_order" value="1">
+                    <input type="hidden" name="order_id" id="deleteOrderId">
+                    <div class="modal-body">
+                        <p>Are you sure you want to delete order <strong id="deleteOrderNumber"></strong>?</p>
+                        <p class="text-danger">This action cannot be undone. Stock quantities will be restored for catalog items.</p>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-danger">Delete Order</button>
+                    </div>
+                </form>
             </div>
-            <button type="button" class="btn btn-danger btn-sm remove-product-btn" onclick="removeProduct(this)">
-                <i class="bi bi-x"></i>
-            </button>
         </div>
-        <div class="product-form-grid">
-            <?php if ($isExisting): ?>
-                <div class="form-group">
-                    <label class="form-label">Product Selection</label>
-                    <select name="product_sno[]" class="form-select product-select" onchange="updateDimensions(this)">
-                        <option value="">-- Select Product --</option>
-                        <?php foreach ($products as $product): ?>
-                            <option value="<?= htmlspecialchars($product['serial_no']) ?>"
-                                data-dimensions="<?= htmlspecialchars($product['dimensions']) ?>">
-                                <?= htmlspecialchars($product['name']) ?> (<?= htmlspecialchars($product['serial_no']) ?>)
+    </div>
+
+    <!-- Hidden Template for Existing Items -->
+    <template id="existingTemplate">
+        <div class="product-entry existing-entry">
+            <button type="button" class="btn-close remove-btn" onclick="removeItem(this)"></button>
+            <div class="row g-2">
+                <div class="col-md-6">
+                    <label class="small">Product <span class="text-danger">*</span></label>
+                    <select name="product_sno[]" class="form-select form-select-sm" onchange="updateProductPrice(this)" required>
+                        <option value="">Select Product</option>
+                        <?php foreach ($products as $p): ?>
+                            <option value="<?= $p['serial_no'] ?>" data-price="<?= $p['price'] ?>" data-dimensions="<?= htmlspecialchars($p['dimensions']) ?>">
+                                <?= htmlspecialchars($p['name']) ?> (<?= htmlspecialchars($p['serial_no']) ?>)
                             </option>
                         <?php endforeach; ?>
                     </select>
                 </div>
-            <?php else: ?>
-                <div class="form-group">
-                    <label class="form-label">Product Name</label>
-                    <input type="text" name="manual_product_name[]" placeholder="Enter product name" class="form-control">
+                <div class="col-md-2">
+                    <label class="small">Qty <span class="text-danger">*</span></label>
+                    <input type="number" name="quantity[]" class="form-control form-control-sm qty" value="1" min="1" onchange="calcTotal()" required>
                 </div>
-            <?php endif; ?>
-            
-            <div class="form-group">
-                <label class="form-label">Quantity</label>
-                <input type="number" name="<?= $prefix ?>quantity[]" min="1" value="1" placeholder="Qty" class="form-control">
-            </div>
-            
-            <div class="form-group full-width">
-                <label class="form-label">Dimension Type</label>
-                <select class="form-select dimension-type-select" onchange="handleDimensionTypeChange(this)">
-                    <option value="">-- Select Dimension Type --</option>
-                    <option value="plate">Plate (L × W × T)</option>
-                    <option value="pipe">Pipe (L × OD × ID × T)</option>
-                    <option value="t-joint">T-Joint (L × W × T × H)</option>
-                    <option value="custom">Block/Custom</option>
-                </select>
-            </div>
-            
-            <!-- Plate Dimensions -->
-            <div class="form-group full-width dimension-inputs" data-type="plate">
-                <div class="dimension-input-group">
-                    <label>Length (L)</label>
-                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
-                           onchange="updateDimensionString(this.closest('.product-entry'))">
+                <div class="col-md-4">
+                    <label class="small">Price ($) <span class="text-danger">*</span></label>
+                    <input type="number" name="custom_price[]" class="form-control form-control-sm price" value="0" step="0.01" onchange="calcTotal()" required>
                 </div>
-                <div class="dimension-input-group">
-                    <label>Width (W)</label>
-                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
-                           onchange="updateDimensionString(this.closest('.product-entry'))">
-                </div>
-                <div class="dimension-input-group">
-                    <label>Thickness (T)</label>
-                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
-                           onchange="updateDimensionString(this.closest('.product-entry'))">
-                </div>
-            </div>
-            
-            <!-- Pipe Dimensions -->
-            <div class="form-group full-width dimension-inputs" data-type="pipe">
-                <div class="dimension-input-group">
-                    <label>Length (L)</label>
-                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
-                           onchange="updateDimensionString(this.closest('.product-entry'))">
-                </div>
-                <div class="dimension-input-group">
-                    <label>Outer Dia (OD)</label>
-                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
-                           onchange="updateDimensionString(this.closest('.product-entry'))">
-                </div>
-                <div class="dimension-input-group">
-                    <label>Inner Dia (ID)</label>
-                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
-                           onchange="updateDimensionString(this.closest('.product-entry'))">
-                </div>
-                <div class="dimension-input-group">
-                    <label>Thickness (T)</label>
-                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
-                           onchange="updateDimensionString(this.closest('.product-entry'))">
-                </div>
-            </div>
-            
-            <!-- T-Joint Dimensions -->
-            <div class="form-group full-width dimension-inputs" data-type="t-joint">
-                <div class="dimension-input-group">
-                    <label>Length (L)</label>
-                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
-                           onchange="updateDimensionString(this.closest('.product-entry'))">
-                </div>
-                <div class="dimension-input-group">
-                    <label>Width (W)</label>
-                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
-                           onchange="updateDimensionString(this.closest('.product-entry'))">
-                </div>
-                <div class="dimension-input-group">
-                    <label>Thickness (T)</label>
-                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
-                           onchange="updateDimensionString(this.closest('.product-entry'))">
-                </div>
-                <div class="dimension-input-group">
-                    <label>Height (H)</label>
-                    <input type="number" step="0.01" placeholder="0.00" class="form-control" 
-                           onchange="updateDimensionString(this.closest('.product-entry'))">
-                </div>
-            </div>
-            
-            <!-- Custom Dimensions -->
-            <div class="form-group full-width dimension-inputs" data-type="custom">
-                <div class="dimension-input-group" style="grid-column: 1 / -1;">
-                    <label>Custom Dimensions</label>
-                    <input type="text" placeholder="Enter custom dimensions" class="form-control" 
-                           onchange="updateDimensionString(this.closest('.product-entry'))">
-                </div>
-            </div>
-            
-            <!-- Hidden input to store the final dimension string -->
-            <input type="hidden" name="<?= $prefix ?>product_dimensions[]" class="product-dimensions-hidden product-dimensions">
-            
-            <!-- Display the formatted dimensions -->
-            <div class="form-group full-width">
-                <div class="dimension-result"></div>
-            </div>
-            
-            <div class="form-group full-width">
-                <label class="form-label">Description</label>
-                <textarea name="<?= $prefix ?>product_description[]" rows="2"
-                    placeholder="<?= $isExisting ? 'Additional notes...' : 'Product description...' ?>"
-                    class="form-control"></textarea>
-            </div>
-            
-            <div class="form-group full-width">
-                <label class="form-label">Drawing File (Optional)</label>
-                <div class="file-upload-wrapper">
-                    <input type="file" name="drawing_file_<?= $type ?>[]" class="form-control" 
-                           id="<?= $uniqueFileId ?>" onchange="previewSelectedFile(this)" style="display: none;">
-                    <label for="<?= $uniqueFileId ?>" class="file-upload-label">
-                        <div class="file-upload-content">
-                            <i class="bi bi-cloud-upload"></i>
-                            <div class="file-upload-text">
-                                <span class="file-upload-title">Click to upload drawing</span>
-                                <span class="file-upload-subtitle">Any file type - Max 10MB</span>
-                            </div>
-                        </div>
-                    </label>
-                </div>
-                <div class="file-preview-container" style="display:none;">
-                    <div class="selected-file-info">
-                        <span class="file-icon">📄</span>
-                        <div class="file-details">
-                            <span class="file-name"></span>
-                            <span class="file-size"></span>
-                        </div>
-                    </div>
+                <div class="col-12">
+                     <input type="file" name="drawing_file_existing[]" class="form-control form-control-sm mt-1" accept=".pdf,.jpg,.jpeg,.png,.gif,.doc,.docx">
+                     <input type="text" name="product_dimensions[]" class="form-control form-control-sm mt-1" placeholder="Dimensions" readonly>
+                     <textarea name="product_description[]" class="form-control form-control-sm mt-1" placeholder="Notes" rows="1"></textarea>
                 </div>
             </div>
         </div>
-    </div>
-    <?php
-    return ob_get_clean();
-}
-?>
+    </template>
+
+    <!-- Hidden Template for Manual Items -->
+    <template id="manualTemplate">
+        <div class="product-entry manual-entry">
+            <button type="button" class="btn-close remove-btn" onclick="removeItem(this)"></button>
+            <div class="row g-2">
+                <div class="col-md-4">
+                    <label class="small">Product Name <span class="text-danger">*</span></label>
+                    <input type="text" name="manual_product_name[]" class="form-control form-control-sm" required>
+                </div>
+                <div class="col-md-2">
+                    <label class="small">Qty <span class="text-danger">*</span></label>
+                    <input type="number" name="manual_quantity[]" class="form-control form-control-sm qty" value="1" min="1" onchange="calcTotal()" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="small">Price ($) <span class="text-danger">*</span></label>
+                    <input type="number" name="manual_price[]" class="form-control form-control-sm price" value="0" step="0.01" onchange="calcTotal()" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="small">Drawing</label>
+                    <input type="file" name="drawing_file_manual[]" class="form-control form-control-sm" accept=".pdf,.jpg,.jpeg,.png,.gif,.doc,.docx">
+                </div>
+                <div class="col-12">
+                    <input type="text" name="manual_product_dimensions[]" class="form-control form-control-sm mt-1" placeholder="Dimensions">
+                    <textarea name="manual_product_description[]" class="form-control form-control-sm mt-1" placeholder="Description" rows="1"></textarea>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Product Management
+        function addManualItem() {
+            const tpl = document.getElementById('manualTemplate').content.cloneNode(true);
+            document.getElementById('productContainer').appendChild(tpl);
+        }
+
+        function addExistingItem() {
+            const tpl = document.getElementById('existingTemplate').content.cloneNode(true);
+            document.getElementById('productContainer').appendChild(tpl);
+        }
+
+        function removeItem(btn) {
+            btn.closest('.product-entry').remove();
+            calcTotal();
+        }
+
+        function updateProductPrice(select) {
+            const price = select.options[select.selectedIndex].dataset.price || 0;
+            const dimensions = select.options[select.selectedIndex].dataset.dimensions || '';
+            const row = select.closest('.row');
+            row.querySelector('.price').value = price;
+            row.querySelector('input[name="product_dimensions[]"]').value = dimensions;
+            calcTotal();
+        }
+
+        function calcTotal() {
+            let subtotal = 0;
+            const container = document.getElementById('productContainer');
+            
+            // Calc all rows
+            const entries = container.querySelectorAll('.product-entry');
+            entries.forEach(entry => {
+                const qty = parseFloat(entry.querySelector('.qty').value) || 0;
+                const price = parseFloat(entry.querySelector('.price').value) || 0;
+                subtotal += (qty * price);
+            });
+
+            // Calc Shipping
+            const method = document.getElementById('shipping_method').value;
+            let shipping = 10;
+            if(method === 'Express') shipping = 25;
+            if(method === 'Overnight') shipping = 50;
+            if(method === 'Pickup') shipping = 0;
+
+            const tax = subtotal * 0.10;
+            const total = subtotal + tax + shipping;
+
+            document.getElementById('displaySubtotal').innerText = '$' + subtotal.toFixed(2);
+            document.getElementById('displayTax').innerText = '$' + tax.toFixed(2);
+            document.getElementById('displayShipping').innerText = '$' + shipping.toFixed(2);
+            document.getElementById('displayTotal').innerText = '$' + total.toFixed(2);
+        }
+
+        // Order Management
+        function updateOrderStatus(orderId) {
+            document.getElementById('updateOrderId').value = orderId;
+            const modal = new bootstrap.Modal(document.getElementById('updateStatusModal'));
+            modal.show();
+        }
+
+        function confirmDelete(orderId) {
+            document.getElementById('deleteOrderId').value = orderId;
+            document.getElementById('deleteOrderNumber').textContent = orderId;
+            const modal = new bootstrap.Modal(document.getElementById('deleteModal'));
+            modal.show();
+        }
+
+        // Form Validation
+        document.getElementById('orderForm')?.addEventListener('submit', function(e) {
+            const customerSelect = this.querySelector('select[name="customer_id"]');
+            const poDateInput = this.querySelector('input[name="po_date"]');
+            const productEntries = this.querySelectorAll('.product-entry');
+            
+            let isValid = true;
+
+            // Validate main form
+            if (!customerSelect.value) {
+                customerSelect.classList.add('is-invalid');
+                isValid = false;
+            } else {
+                customerSelect.classList.remove('is-invalid');
+            }
+
+            if (!poDateInput.value) {
+                poDateInput.classList.add('is-invalid');
+                isValid = false;
+            } else {
+                poDateInput.classList.remove('is-invalid');
+            }
+
+            // Validate product entries
+            let hasValidProducts = false;
+            productEntries.forEach(entry => {
+                const nameInput = entry.querySelector('input[name="manual_product_name[]"], select[name="product_sno[]"]');
+                const qtyInput = entry.querySelector('.qty');
+                const priceInput = entry.querySelector('.price');
+
+                if (nameInput && nameInput.value && qtyInput.value > 0 && priceInput.value > 0) {
+                    hasValidProducts = true;
+                    nameInput.classList.remove('is-invalid');
+                    qtyInput.classList.remove('is-invalid');
+                    priceInput.classList.remove('is-invalid');
+                } else if (nameInput && (nameInput.value || qtyInput.value > 0 || priceInput.value > 0)) {
+                    // Partial entry - show errors
+                    if (!nameInput.value) nameInput.classList.add('is-invalid');
+                    if (qtyInput.value <= 0) qtyInput.classList.add('is-invalid');
+                    if (priceInput.value <= 0) priceInput.classList.add('is-invalid');
+                    isValid = false;
+                }
+            });
+
+            if (!hasValidProducts) {
+                alert('Please add at least one valid product to the order.');
+                isValid = false;
+            }
+
+            if (!isValid) {
+                e.preventDefault();
+                alert('Please check the form for errors. All required fields must be filled correctly.');
+            }
+        });
+
+        // Initialize calculations on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            calcTotal();
+            
+            // Auto-hide success message after 5 seconds
+            const successAlert = document.querySelector('.alert-success');
+            if (successAlert) {
+                setTimeout(() => {
+                    successAlert.style.opacity = '0';
+                    setTimeout(() => successAlert.remove(), 500);
+                }, 5000);
+            }
+        });
+
+        // Mobile sidebar toggle (if needed)
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            if (sidebar) {
+                sidebar.classList.toggle('mobile-open');
+            }
+        }
+    </script>
+</body>
+</html>

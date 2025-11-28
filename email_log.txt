@@ -1,0 +1,47 @@
+[2025-11-28 08:17:35] TO: inventory@alphasonix.com | SUBJECT: New Product Added | MESSAGE: New product added:
+Serial: 222
+Name: tray
+Price: $10
+Stock: 10
+[2025-11-28 08:21:02] TO: gva@gmail.com | SUBJECT: Welcome to Alphasonix! | MESSAGE: Dear jeeva,
+
+Thank you for choosing Alphasonix. We're excited to have you as our customer.
+
+If you h
+[2025-11-28 08:36:31] TO: ramr@gmail.com | SUBJECT: Welcome to Alphasonix! | MESSAGE: Dear ram,
+
+Thank you for choosing Alphasonix. We're excited to have you as our customer.
+
+If you hav
+[2025-11-28 08:37:19] TO: inventory@alphasonix.com | SUBJECT: New Product Added | MESSAGE: New product added:
+Serial: 2121
+Name: box
+Price: $230
+Stock: 245230
+[2025-11-28 09:56:45] TO: veki@gmail.com | SUBJECT: Welcome to Alphasonix! | MESSAGE: Dear venki,
+
+Thank you for choosing Alphasonix. We're excited to have you as our customer.
+
+If you h
+[2025-11-28 09:57:27] TO: veki@gmail.com | SUBJECT: gf | MESSAGE: dh
+[2025-11-28 09:57:58] TO: veki@gmail.com | SUBJECT: tehj | MESSAGE: rtgjryzmgku
+[2025-11-28 10:00:07] TO: inventory@alphasonix.com | SUBJECT: New Product Added | MESSAGE: New product added:
+Serial: 31
+Name: box
+Price: $120
+Stock: 110
+[2025-11-28 10:03:08] TO: inventory@alphasonix.com | SUBJECT: New Product Added | MESSAGE: New product added:
+Serial: 6
+Name: boxes
+Price: $110
+Stock: 110
+[2025-11-28 10:39:52] TO: arun@gmail.com | SUBJECT: Welcome to Alphasonix! | MESSAGE: Dear Arun,
+
+Thank you for choosing Alphasonix. We're excited to have you as our customer.
+
+If you ha
+[2025-11-28 10:41:21] TO: inventory@alphasonix.com | SUBJECT: New Product Added | MESSAGE: New product added:
+Serial: 7
+Name: clay
+Price: $220
+Stock: 20
