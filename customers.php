@@ -10,9 +10,9 @@ define('CUSTOMERS_PHP_LOADED', true);
 // requireAuth();
 
 // Check rate limiting
-if (!checkRateLimit('customers_page', $_SESSION['user_id'], 100, 60)) {
-    die('Rate limit exceeded. Please try again later.');
-}
+// if (!checkRateLimit('customers_page', $_SESSION['user_id'], 100, 60)) {
+//     die('Rate limit exceeded. Please try again later.');
+// }
 
 // ==========================================
 // ENHANCED CUSTOMER FUNCTIONS
@@ -1526,7 +1526,7 @@ $current_page = basename($_SERVER['PHP_SELF']);
                         <i class="bi bi-cash-stack"></i>
                     </div>
                     <div class="stat-info">
-                        <h3>$<?= number_format($customerStats['avg_customer_value'], 2) ?></h3>
+                        <h3>₹<?= number_format($customerStats['avg_customer_value'], 2) ?></h3>
                         <p>Avg. Customer Value</p>
                     </div>
                 </div>
@@ -1598,9 +1598,9 @@ $current_page = basename($_SERVER['PHP_SELF']);
                             </div>
 
                             <div class="form-group">
-                                <label class="form-label" for="company">Company:</label>
+                                <label class="form-label" for="company">Company: <span style="color: red;">*</span></label>
                                 <input type="text" id="company" name="company" class="form-input"
-                                    value="<?= $editCustomer ? htmlspecialchars($editCustomer['company'] ?? '') : '' ?>">
+                                    value="<?= $editCustomer ? htmlspecialchars($editCustomer['company'] ?? '') : '' ?>" required>
                             </div>
                         </div>
                     </div>
@@ -1662,7 +1662,7 @@ $current_page = basename($_SERVER['PHP_SELF']);
                             </div>
 
                             <div class="form-group">
-                                <label class="form-label" for="credit_limit">Credit Limit ($):</label>
+                                <label class="form-label" for="credit_limit">Credit Limit (₹):</label>
                                 <input type="number" id="credit_limit" name="credit_limit" class="form-input"
                                     value="<?= $editCustomer ? htmlspecialchars($editCustomer['credit_limit'] ?? '0') : '0' ?>"
                                     min="0" step="0.01">
@@ -1765,11 +1765,11 @@ $current_page = basename($_SERVER['PHP_SELF']);
                                 </div>
                                 <div class="info-item">
                                     <div class="info-label">Total Spent</div>
-                                    <div class="info-value">$<?= number_format($viewCustomer['total_spent'], 2) ?></div>
+                                    <div class="info-value">₹<?= number_format($viewCustomer['total_spent'], 2) ?></div>
                                 </div>
                                 <div class="info-item">
                                     <div class="info-label">Credit Limit</div>
-                                    <div class="info-value">$<?= number_format($viewCustomer['credit_limit'] ?? 0, 2) ?></div>
+                                    <div class="info-value">₹<?= number_format($viewCustomer['credit_limit'] ?? 0, 2) ?></div>
                                 </div>
                                 <div class="info-item">
                                     <div class="info-label">Last Order</div>
@@ -1952,7 +1952,7 @@ $current_page = basename($_SERVER['PHP_SELF']);
                                         <strong><?= number_format($customer['total_orders']) ?></strong>
                                     </td>
                                     <td>
-                                        <strong>$<?= number_format($customer['total_spent'], 2) ?></strong>
+                                        <strong>₹<?= number_format($customer['total_spent'], 2) ?></strong>
                                     </td>
                                     <td>
                                         <span class="status-badge status-<?= $customer['status'] ?? 'active' ?>">

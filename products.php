@@ -10,9 +10,9 @@ define('PRODUCTS_PHP_LOADED', true);
 // requireAuth();
 
 // Check rate limiting
-if (!checkRateLimit('products_page', $_SESSION['user_id'], 100, 60)) {
-    die('Rate limit exceeded. Please try again later.');
-}
+// if (!checkRateLimit('products_page', $_SESSION['user_id'], 100, 60)) {
+//     die('Rate limit exceeded. Please try again later.');
+// }
 
 // Define upload directories
 $uploadDir = 'uploads/products/';
@@ -1148,7 +1148,7 @@ $newProductSNo = isset($_GET['new']) ? sanitize_input($_GET['new']) : null;
                             </datalist>
                         </div>
                         <div class="form-group">
-                            <label class="form-label">Price ($):</label>
+                            <label class="form-label">Price (₹):</label>
                             <input type="number" name="price" class="form-input" 
                                 value="<?= $editProduct ? htmlspecialchars($editProduct['price']) : '0' ?>" 
                                 min="0" step="0.01">
@@ -1278,7 +1278,7 @@ $newProductSNo = isset($_GET['new']) ? sanitize_input($_GET['new']) : null;
                                 <td><?= htmlspecialchars($product['name']) ?></td>
                                 <td><?= htmlspecialchars($product['dimensions']) ?></td>
                                 <td><?= htmlspecialchars($product['category'] ?? '-') ?></td>
-                                <td>$<?= number_format($product['price'] ?? 0, 2) ?></td>
+                                <td>₹<?= number_format($product['price'] ?? 0, 2) ?></td>
                                 <td>
                                     <?php 
                                     $stock = intval($product['stock_quantity'] ?? 0);

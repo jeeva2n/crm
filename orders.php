@@ -746,7 +746,7 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
             <div class="col-md-3">
                 <div class="stat-card">
                     <div class="text-muted">Revenue</div>
-                    <div class="stat-value">$<?= number_format($totalRevenue, 2) ?></div>
+                    <div class="stat-value">₹<?= number_format($totalRevenue, 2) ?></div>
                 </div>
             </div>
             <div class="col-md-3">
@@ -806,10 +806,10 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
                                 <div class="col-md-4">
                                     <label class="form-label">Shipping</label>
                                     <select name="shipping_method" id="shipping_method" class="form-select" onchange="calcTotal()">
-                                        <option value="Standard">Standard ($10)</option>
-                                        <option value="Express">Express ($25)</option>
-                                        <option value="Overnight">Overnight ($50)</option>
-                                        <option value="Pickup">Pickup ($0)</option>
+                                        <option value="Standard">Standard (₹10)</option>
+                                        <option value="Express">Express (₹25)</option>
+                                        <option value="Overnight">Overnight (₹50)</option>
+                                        <option value="Pickup">Pickup (₹0)</option>
                                     </select>
                                 </div>
                                 <div class="col-md-4">
@@ -843,7 +843,7 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
                                             <input type="number" name="manual_quantity[]" class="form-control form-control-sm qty" value="1" min="1" onchange="calcTotal()" required>
                                         </div>
                                         <div class="col-md-3">
-                                            <label class="small">Price ($) <span class="text-danger">*</span></label>
+                                            <label class="small">Price (₹) <span class="text-danger">*</span></label>
                                             <input type="number" name="manual_price[]" class="form-control form-control-sm price" value="0" step="0.01" onchange="calcTotal()" required>
                                         </div>
                                         <div class="col-md-3">
@@ -871,19 +871,19 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
                             <div class="alert alert-light border">
                                 <div class="d-flex justify-content-between">
                                     <span>Subtotal:</span>
-                                    <strong id="displaySubtotal">$0.00</strong>
+                                    <strong id="displaySubtotal">₹0.00</strong>
                                 </div>
                                 <div class="d-flex justify-content-between">
                                     <span>Shipping:</span>
-                                    <strong id="displayShipping">$10.00</strong>
+                                    <strong id="displayShipping">₹10.00</strong>
                                 </div>
                                 <div class="d-flex justify-content-between">
                                     <span>Tax (10%):</span>
-                                    <strong id="displayTax">$0.00</strong>
+                                    <strong id="displayTax">₹0.00</strong>
                                 </div>
                                 <div class="d-flex justify-content-between fs-5 mt-2 pt-2 border-top">
                                     <strong>Total:</strong>
-                                    <strong class="text-primary" id="displayTotal">$0.00</strong>
+                                    <strong class="text-primary" id="displayTotal">₹0.00</strong>
                                 </div>
                             </div>
 
@@ -913,7 +913,7 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
                                         </span>
                                     </div>
                                     <small class="text-muted"><?= htmlspecialchars($customerMap[$o['customer_id']] ?? 'Unknown') ?></small>
-                                    <div class="mt-1">$<?= number_format($o['total_amount'], 2) ?></div>
+                                    <div class="mt-1">₹<?= number_format($o['total_amount'], 2) ?></div>
                                 </div>
                             <?php endforeach; ?>
                         <?php else: ?>
@@ -1025,7 +1025,7 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
                                             <span class="badge bg-secondary"><?= $order['item_count'] ?> items</span>
                                         </td>
                                         <td>
-                                            <strong>$<?= number_format($order['total_amount'], 2) ?></strong>
+                                            <strong>₹<?= number_format($order['total_amount'], 2) ?></strong>
                                         </td>
                                         <td>
                                             <span class="status-badge status-<?= strtolower(str_replace(' ', '-', $order['status'])) ?>">
@@ -1174,7 +1174,7 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
                     <input type="number" name="quantity[]" class="form-control form-control-sm qty" value="1" min="1" onchange="calcTotal()" required>
                 </div>
                 <div class="col-md-4">
-                    <label class="small">Price ($) <span class="text-danger">*</span></label>
+                    <label class="small">Price (₹) <span class="text-danger">*</span></label>
                     <input type="number" name="custom_price[]" class="form-control form-control-sm price" value="0" step="0.01" onchange="calcTotal()" required>
                 </div>
                 <div class="col-12">
@@ -1200,7 +1200,7 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
                     <input type="number" name="manual_quantity[]" class="form-control form-control-sm qty" value="1" min="1" onchange="calcTotal()" required>
                 </div>
                 <div class="col-md-3">
-                    <label class="small">Price ($) <span class="text-danger">*</span></label>
+                    <label class="small">Price (₹) <span class="text-danger">*</span></label>
                     <input type="number" name="manual_price[]" class="form-control form-control-sm price" value="0" step="0.01" onchange="calcTotal()" required>
                 </div>
                 <div class="col-md-3">
@@ -1264,10 +1264,10 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
             const tax = subtotal * 0.10;
             const total = subtotal + tax + shipping;
 
-            document.getElementById('displaySubtotal').innerText = '$' + subtotal.toFixed(2);
-            document.getElementById('displayTax').innerText = '$' + tax.toFixed(2);
-            document.getElementById('displayShipping').innerText = '$' + shipping.toFixed(2);
-            document.getElementById('displayTotal').innerText = '$' + total.toFixed(2);
+            document.getElementById('displaySubtotal').innerText = '₹' + subtotal.toFixed(2);
+            document.getElementById('displayTax').innerText = '₹' + tax.toFixed(2);
+            document.getElementById('displayShipping').innerText = '₹' + shipping.toFixed(2);
+            document.getElementById('displayTotal').innerText = '₹' + total.toFixed(2);
         }
 
         // Order Management

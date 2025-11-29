@@ -2433,10 +2433,10 @@ $csrfToken = generateCsrfToken();
                                             class="btn btn-primary text-center">
                                             <i class="bi bi-graph-up"></i> View All Stages
                                         </a>
-                                        <button class="btn btn-info view-history-btn"
+                                        <!-- <button class="btn btn-info view-history-btn"
                                             data-order-id="<?= htmlspecialchars($order['order_id']) ?>">
                                             <i class="bi bi-clock-history"></i> View History
-                                        </button>
+                                        </button> -->
                                     </div>
                                 </div>
 

@@ -143,3 +143,5 @@ INSERT IGNORE INTO order_items (order_id, product_id, serial_no, name, dimension
 (1, 1, 'PROD-001', 'Steel Plate 10mm', '1000x2000x10mm', 2, 450.00, 900.00, 'In Production'),
 (1, 2, 'PROD-002', 'Aluminum Bar 50mm', '6000x50mm', 1, 120.00, 120.00, 'Pending'),
 (2, 3, 'PROD-003', 'Stainless Pipe 2"', '6000x2"', 10, 85.00, 850.00, 'Pending');
+
+
