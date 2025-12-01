@@ -243,7 +243,8 @@ function generateDocument() {
             tbody.appendChild(tr);
         }
     });
-    
+    saveToCRM();
+
     // Show template, hide form
     document.getElementById('formSection').style.display = 'none';
     document.getElementById('templateSection').style.display = 'block';
@@ -283,4 +284,34 @@ function formatDate(dateString) {
     if (!dateString) return '';
     const date = new Date(dateString);
     return date.toLocaleDateString('en-GB');
+}
+function saveToCRM() {
+    const formData = {
+        form_type: document.getElementById('formType').value,
+        order_number: document.getElementById('orderNumber').value,
+        vendor: document.getElementById('vendor').value,
+
+        approved_by: document.getElementById('approvedBy').value,
+        approval_date: document.getElementById('approvalDate').value,
+
+        purchased_from: document.getElementById('purchasedFrom').value,
+        purchased_by: document.getElementById('purchasedBy').value,
+        purchase_date: document.getElementById('purchaseDate').value,
+
+        // Collect items from form
+        items: Array.from(document.querySelectorAll('.item-row')).map((row) => ({
+            description: row.querySelector('.item-description').value,
+            material: row.querySelector('.item-material').value,
+            dimensions: row.querySelector('.item-dimensions').value,
+            quantity: row.querySelector('.item-quantity').value
+        }))
+    };
+
+    fetch("save_form.php", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(formData)
+    })
+    .then(r => r.json())
+    .then(res => console.log("Saved:", res));
 }
