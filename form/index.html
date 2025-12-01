@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Alpha Sonix Form Generator</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        /* Additional styles for dimension inputs */
+        .dimension-type-select {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+
+        .dimension-inputs {
+            display: none;
+            grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .dimension-inputs.active {
+            display: grid;
+        }
+
+        .dimension-input-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .dimension-input-group label {
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: #666;
+            margin-bottom: 2px;
+        }
+
+        .dimension-input-group input {
+            padding: 6px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.875rem;
+        }
+
+        .dimension-result {
+            padding: 8px;
+            background: #f5f5f5;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.875rem;
+            margin-bottom: 10px;
+            min-height: 34px;
+            display: flex;
+            align-items: center;
+        }
+
+        .dimension-result:empty::before {
+            content: 'Select dimension type';
+            color: #999;
+        }
+
+        .item-row {
+            display: grid;
+            grid-template-columns: 1.5fr 1fr 2fr 0.5fr auto;
+            gap: 10px;
+            margin-bottom: 10px;
+            padding: 15px;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            background: #fafafa;
+        }
+
+        .dimension-section {
+            grid-column: span 4;
+        }
+
+        .item-inputs-row {
+            display: grid;
+            grid-template-columns: 1.5fr 1fr 0.5fr;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        @media print {
+            .action-buttons {
+                display: none !important;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Form Section -->
+    <div id="formSection" class="form-container">
+        <h2>Generate Document</h2>
+        <form id="documentForm">
+            <div class="form-group">
+                <label for="formType">Form Type:</label>
+                <select id="formType" required>
+                    <option value="">Select Form Type</option>
+                    <option value="MATERIAL PURCHASE LIST">Material Purchase List</option>
+                    <option value="MACHINING FORM">Machining Form</option>
+                    <option value="WELDING FORM">Welding Form</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="orderNumber">Order Number:</label>
+                <input type="text" id="orderNumber" placeholder="Enter order number" required>
+            </div>
+
+            <div class="form-group">
+                <label for="vendor">Vendor:</label>
+                <input type="text" id="vendor" placeholder="Enter vendor name">
+            </div>
+
+            <div class="form-group">
+                <label for="approvedBy">Approved By:</label>
+                <select id="approvedBy" required>
+                    <option value="">Select Approver</option>
+                    <option value="Harish B">HARISH B</option>
+                    <option value="Bharath D">BHARATH D</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="approvalDate">Approval Date:</label>
+                <input type="date" id="approvalDate" required>
+            </div>
+
+            <div class="form-group">
+                <label for="purchasedFrom">Purchased From:</label>
+                <input type="text" id="purchasedFrom" placeholder="Enter supplier name">
+            </div>
+
+            <div class="form-group">
+                <label for="purchasedBy">Purchased By:</label>
+                <input type="text" id="purchasedBy" placeholder="Enter purchaser name">
+            </div>
+
+            <div class="form-group">
+                <label for="purchaseDate">Purchase Date:</label>
+                <input type="date" id="purchaseDate">
+            </div>
+
+            <h3>Items</h3>
+            <div id="itemsContainer">
+                <!-- First item will be added by JavaScript -->
+            </div>
+            <button type="button" onclick="addItem()" class="add-item-btn">Add Item</button>
+
+            <div class="form-actions">
+                <button type="submit" class="generate-btn">Generate Document</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Template Section (Hidden Initially) -->
+    <div id="templateSection" class="container" style="display: none;">
+        <div class="action-buttons">
+            <button onclick="editDocument()" class="btn edit-btn">Edit</button>
+            <button onclick="printDocument()" class="btn print-btn">Print</button>
+            <button onclick="downloadPDF()" class="btn download-btn">Download PDF</button>
+        </div>
+
+        <div class="header">
+            <div class="logo-section">
+                <img src="./alpha.png" alt="Alpha Sonix Logo" class="company-logo">
+            </div>
+        </div>
+
+        <div class="document-title" id="documentTitle">MATERIAL PURCHASE LIST</div>
+
+        <div class="order-info">
+            <div class="order-number" id="orderInfo">ORDER NO: 85</div>
+            <div class="vendor" id="vendorInfo">VENDOR -</div>
+        </div>
+
+        <table class="purchase-table">
+            <thead>
+                <tr>
+                    <th>SL.No</th>
+                    <th>Description</th>
+                    <th>Material</th>
+                    <th>Dimensions</th>
+                    <th>Quantity</th>
+                </tr>
+            </thead>
+            <tbody id="itemsTableBody">
+                <!-- Items will be populated here -->
+            </tbody>
+        </table>
+
+        <table class="approval-table">
+            <tr>
+                <td class="label">Approved BY</td>
+                <td class="value" id="approvedByField">Harish B</td>
+                <td></td>
+                <td></td>
+            </tr>
+            <tr>
+                <td class="label">Date</td>
+                <td class="value" id="approvalDateField">19/11/2025</td>
+                <td></td>
+                <td></td>
+            </tr>
+            <tr>
+                <td class="label">Purchased From</td>
+                <td id="purchasedFromField"></td>
+                <td></td>
+                <td></td>
+            </tr>
+            <tr>
+                <td class="label">Purchased By</td>
+                <td id="purchasedByField"></td>
+                <td></td>
+                <td></td>
+            </tr>
+            <tr>
+                <td class="label">Date</td>
+                <td id="purchaseDateField"></td>
+                <td></td>
+                <td></td>
+            </tr>
+        </table>
+        <br>
+        <center>
+            <div class="document-footer">
+                <p class="footer-text">This is a system generated document</p>
+                <p class="footer-text">©
+                    <script>document.write(new Date().getFullYear());</script> Alpha Sonix NDT Solutions Pvt Ltd. All
+                    rights reserved.
+                </p>
+            </div>
+        </center>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <script src="index.js"></script>
+</body>
+
+</html>

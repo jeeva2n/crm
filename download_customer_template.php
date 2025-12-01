@@ -1,7 +1,7 @@
 <?php
 session_start();
 require_once 'functions.php';
-requireAuth();
+// requireAuth();
 
 header('Content-Type: text/csv');
 header('Content-Disposition: attachment; filename="customer_import_template.csv"');

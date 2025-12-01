@@ -1,0 +1,369 @@
+/* styles.css */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: Arial, sans-serif;
+    background-color: #f5f5f5;
+    padding: 20px;
+}
+
+/* Form Styles */
+.form-container {
+    max-width: 800px;
+    margin: 0 auto;
+    background-color: white;
+    padding: 30px;
+    border-radius: 10px;
+    box-shadow: 0 0 20px rgba(0,0,0,0.1);
+}
+
+.form-container h2 {
+    color: #2c3e6f;
+    margin-bottom: 30px;
+    text-align: center;
+}
+
+.form-container h3 {
+    color: #2c3e6f;
+    margin: 20px 0 10px;
+}
+
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 5px;
+    color: #333;
+    font-weight: bold;
+}
+
+.form-group input,
+.form-group select {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    font-size: 14px;
+}
+
+.item-row {
+    display: grid;
+    grid-template-columns: 1.5fr 1fr 2fr 0.5fr auto;
+    gap: 10px;
+    margin-bottom: 10px;
+    align-items: center;
+}
+
+.item-row input {
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.remove-item {
+    background-color: #dc3545;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.add-item-btn {
+    background-color: #28a745;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 5px;
+    cursor: pointer;
+    margin-top: 10px;
+}
+
+.form-actions {
+    text-align: center;
+    margin-top: 30px;
+}
+
+.generate-btn {
+    background-color: #2c3e6f;
+    color: white;
+    border: none;
+    padding: 15px 40px;
+    border-radius: 5px;
+    font-size: 16px;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+.generate-btn:hover {
+    background-color: #1a252f;
+}
+
+/* Action Buttons */
+.action-buttons {
+    text-align: center;
+    margin-bottom: 20px;
+   
+}
+
+.btn {
+    padding: 10px 20px;
+    margin: 0 5px;
+    border: none;
+    border-radius: 5px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.edit-btn {
+    background-color: #ffc107;
+    color: #000;
+}
+
+.print-btn {
+    background-color: #17a2b8;
+    color: white;
+}
+
+.download-btn {
+    background-color: #28a745;
+    color: white;
+}
+
+.btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+
+/* Template Styles */
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    background-color: white;
+    padding: 30px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+}
+
+.header {
+    border: 2px solid #000;
+    padding: 20px;
+    margin-bottom: 20px;
+    text-align: center;
+}
+
+.company-logo {
+    max-height: 100px;
+    width: auto;
+}
+
+.document-title {
+    background-color: #2c3e6f;
+    color: white;
+    padding: 10px;
+    text-align: center;
+    font-size: 18px;
+    font-weight: bold;
+    margin-bottom: 0;
+}
+
+.order-info {
+    background-color: #f0f0f0;
+    padding: 10px;
+    border: 1px solid #000;
+    border-top: none;
+    margin-bottom: 20px;
+}
+
+.order-number {
+    font-weight: bold;
+    margin-bottom: 5px;
+}
+
+.vendor {
+    font-weight: bold;
+}
+
+.purchase-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+}
+
+.purchase-table th {
+    background-color: #e0e0e0;
+    border: 1px solid #000;
+    padding: 10px;
+    text-align: left;
+    font-weight: bold;
+}
+
+.purchase-table td {
+    border: 1px solid #000;
+    padding: 10px;
+}
+
+.approval-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.approval-table td {
+    border: 1px solid #000;
+    padding: 8px;
+    height: 35px;
+}
+
+.approval-table .label {
+    background-color: #e0e0e0;
+    font-weight: bold;
+    width: 150px;
+}
+
+.approval-table .value {
+    width: 200px;
+}
+
+@media print {
+    body {
+        padding: 0;
+        background-color: white;
+    }
+    
+    .container {
+        box-shadow: none;
+        padding: 20px;
+    }
+    
+    .action-buttons {
+        display: none !important;
+    }
+}
+
+@media screen and (max-width: 768px) {
+    .item-row {
+        grid-template-columns: 1fr;
+    }
+    
+    .action-buttons {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+    
+    .btn {
+        width: 100%;
+    }
+}
+/* Container for each item row */
+.item-row {
+    background: #fff;
+    padding: 15px;
+    margin-bottom: 12px;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+/* First row: description, material, qty */
+.item-inputs-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr 80px;
+    gap: 12px;
+}
+
+/* Second row: full dimension section */
+.dimension-section {
+    border-top: 1px dashed #d5d5d5;
+    padding-top: 12px;
+    margin-top: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* Dropdown */
+.dimension-type-select {
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid #bbb;
+    font-size: 14px;
+}
+
+/* Dimension groups (hidden by default) */
+.dimension-inputs {
+    display: none;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 12px;
+}
+
+/* Show active input group */
+.dimension-inputs.active {
+    display: grid;
+}
+
+/* Each input group */
+.dimension-input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.dimension-input-group label {
+    font-size: 12px;
+    color: #444;
+}
+
+/* Inputs */
+.dimension-input-group input,
+.item-inputs-row input {
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    font-size: 14px;
+}
+
+/* Dimension result box */
+.dimension-result {
+    padding: 8px 10px;
+    background: #f7f7f7;
+    border-radius: 6px;
+    border: 1px solid #e0e0e0;
+    font-size: 14px;
+    color: #333;
+    min-height: 34px;
+    display: flex;
+    align-items: center;
+}
+
+/* Remove button */
+.remove-item {
+    align-self: flex-end;
+    background: #ff3b3b;
+    color: #fff;
+    border: none;
+    padding: 7px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.remove-item:hover {
+    background: #d52a2a;
+}
+
+/* Mobile responsive */
+@media (max-width: 600px) {
+    .item-inputs-row {
+        grid-template-columns: 1fr 1fr 60px;
+    }
+}
+
