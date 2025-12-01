@@ -792,8 +792,8 @@ function createThumbnail($source, $destination, $width, $height) {
                 break;
         }
 
-        imagedestroy($image);
-        imagedestroy($thumb);
+        // imagedestroy($image);
+        // imagedestroy($thumb);
         return true;
     } catch (Exception $e) {
         error_log("Thumbnail creation error: " . $e->getMessage());

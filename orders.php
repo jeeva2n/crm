@@ -54,6 +54,20 @@ try {
             $conn->exec("ALTER TABLE order_items ADD COLUMN $col $def"); 
         }
     }
+    
+    // Ensure 'products' table has dimension_type column
+    try {
+        $conn->query("SELECT dimension_type FROM products LIMIT 1");
+    } catch (Exception $e) {
+        $conn->exec("ALTER TABLE products ADD COLUMN dimension_type VARCHAR(20) DEFAULT 'plate' AFTER dimensions");
+    }
+    
+    // And for order_items table
+    try {
+        $conn->query("SELECT dimension_type FROM order_items LIMIT 1");
+    } catch (Exception $e) {
+        $conn->exec("ALTER TABLE order_items ADD COLUMN dimension_type VARCHAR(20) DEFAULT 'plate' AFTER dimensions");
+    }
 
 } catch (Exception $e) {
     error_log("Schema check error: " . $e->getMessage());
@@ -356,12 +370,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_order'])) {
                 // Upload File
                 $fileData = isset($files[$idx]) ? handleUpload($files[$idx], $orderIdStr, $sNo) : ['filename'=>'', 'original'=>''];
 
+                // Get dimension type and formatted dimensions
+                $dimensionType = sanitize_input($_POST['dimension_type'][$idx] ?? 'plate');
+                $formattedDimensions = sanitize_input($_POST['product_dimensions'][$idx] ?? $product['dimensions'] ?? '');
+
                 // Insert Item
                 $iStmt = $conn->prepare("
                     INSERT INTO order_items 
-                    (order_id, product_id, serial_no, name, dimensions, description, quantity, 
+                    (order_id, product_id, serial_no, name, dimensions, dimension_type, description, quantity, 
                      unit_price, total_price, item_status, drawing_filename, original_filename)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)
                 ");
                 
                 $iStmt->execute([
@@ -369,7 +387,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_order'])) {
                     $product['id'] ?? null,
                     $sNo,
                     $product['name'] ?? 'Unknown',
-                    $_POST['product_dimensions'][$idx] ?? $product['dimensions'] ?? '',
+                    $formattedDimensions,
+                    $dimensionType,
                     $_POST['product_description'][$idx] ?? '',
                     $qty,
                     $price,
@@ -410,19 +429,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_order'])) {
                 // Upload File
                 $fileData = isset($files[$idx]) ? handleUpload($files[$idx], $orderIdStr, $manualSNo) : ['filename'=>'', 'original'=>''];
 
+                // Get dimension type and formatted dimensions
+                $dimensionType = sanitize_input($_POST['manual_dimension_type'][$idx] ?? 'plate');
+                $formattedDimensions = sanitize_input($_POST['manual_product_dimensions'][$idx] ?? '');
+
                 // Insert Item
                 $iStmt = $conn->prepare("
                     INSERT INTO order_items 
-                    (order_id, product_id, serial_no, name, dimensions, description, quantity, 
+                    (order_id, product_id, serial_no, name, dimensions, dimension_type, description, quantity, 
                      unit_price, total_price, item_status, drawing_filename, original_filename)
-                    VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)
+                    VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)
                 ");
                 
                 $iStmt->execute([
                     $internalOrderId,
                     $manualSNo,
                     $name,
-                    $_POST['manual_product_dimensions'][$idx] ?? '',
+                    $formattedDimensions,
+                    $dimensionType,
                     $_POST['manual_product_description'][$idx] ?? '',
                     $qty,
                     $price,
@@ -706,6 +730,16 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
                 margin-left: 0;
             }
         }
+        
+        .dimension-inputs .col-3,
+        .dimension-inputs .col-4 {
+            padding-left: 3px;
+            padding-right: 3px;
+        }
+        
+        .dimension-inputs input {
+            font-size: 0.8rem;
+        }
     </style>
 </head>
 <body>
@@ -850,8 +884,37 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
                                             <label class="small">Drawing</label>
                                             <input type="file" name="drawing_file_manual[]" class="form-control form-control-sm" accept=".pdf,.jpg,.jpeg,.png,.gif,.doc,.docx">
                                         </div>
+                                        
+                                        <!-- Dimension Type and Inputs -->
+                                        <div class="col-md-4">
+                                            <label class="small">Dimension Type</label>
+                                            <select name="manual_dimension_type[]" class="form-select form-select-sm" onchange="updateDimensionInputs(this)">
+                                                <option value="plate">Plate (L x W x T)</option>
+                                                <option value="pipe">Pipe (L x OD x ID x T)</option>
+                                                <option value="t-joint">T-Joint (L x W x T x H)</option>
+                                                <option value="block">Block (L x W x H)</option>
+                                            </select>
+                                        </div>
+                                        
+                                        <div class="col-md-8">
+                                            <label class="small">Dimensions</label>
+                                            <div class="dimension-inputs">
+                                                <div class="row g-1">
+                                                    <div class="col-4">
+                                                        <input type="number" name="manual_dimension_L[]" class="form-control form-control-sm" placeholder="L (mm)" step="0.1">
+                                                    </div>
+                                                    <div class="col-4">
+                                                        <input type="number" name="manual_dimension_W[]" class="form-control form-control-sm" placeholder="W (mm)" step="0.1">
+                                                    </div>
+                                                    <div class="col-4">
+                                                        <input type="number" name="manual_dimension_T[]" class="form-control form-control-sm" placeholder="T (mm)" step="0.1">
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
                                         <div class="col-12">
-                                            <input type="text" name="manual_product_dimensions[]" class="form-control form-control-sm mt-1" placeholder="Dimensions">
+                                            <input type="hidden" name="manual_product_dimensions[]" class="dimensions-hidden">
                                             <textarea name="manual_product_description[]" class="form-control form-control-sm mt-1" placeholder="Description" rows="1"></textarea>
                                         </div>
                                     </div>
@@ -1160,10 +1223,13 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
             <div class="row g-2">
                 <div class="col-md-6">
                     <label class="small">Product <span class="text-danger">*</span></label>
-                    <select name="product_sno[]" class="form-select form-select-sm" onchange="updateProductPrice(this)" required>
+                    <select name="product_sno[]" class="form-select form-select-sm" onchange="updateProductDetails(this)" required>
                         <option value="">Select Product</option>
                         <?php foreach ($products as $p): ?>
-                            <option value="<?= $p['serial_no'] ?>" data-price="<?= $p['price'] ?>" data-dimensions="<?= htmlspecialchars($p['dimensions']) ?>">
+                            <option value="<?= $p['serial_no'] ?>" 
+                                    data-price="<?= $p['price'] ?>" 
+                                    data-dimensions="<?= htmlspecialchars($p['dimensions']) ?>"
+                                    data-dimension-type="<?= $p['dimension_type'] ?? 'plate' ?>">
                                 <?= htmlspecialchars($p['name']) ?> (<?= htmlspecialchars($p['serial_no']) ?>)
                             </option>
                         <?php endforeach; ?>
@@ -1177,10 +1243,40 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
                     <label class="small">Price (₹) <span class="text-danger">*</span></label>
                     <input type="number" name="custom_price[]" class="form-control form-control-sm price" value="0" step="0.01" onchange="calcTotal()" required>
                 </div>
+                
+                <!-- Dimension Type and Inputs -->
+                <div class="col-md-4">
+                    <label class="small">Dimension Type</label>
+                    <select name="dimension_type[]" class="form-select form-select-sm" onchange="updateDimensionInputs(this)" data-original-type="">
+                        <option value="plate">Plate (L x W x T)</option>
+                        <option value="pipe">Pipe (L x OD x ID x T)</option>
+                        <option value="t-joint">T-Joint (L x W x T x H)</option>
+                        <option value="block">Block (L x W x H)</option>
+                    </select>
+                </div>
+                
+                <div class="col-md-8">
+                    <label class="small">Dimensions</label>
+                    <div class="dimension-inputs">
+                        <!-- Plate dimensions by default -->
+                        <div class="row g-1">
+                            <div class="col-4">
+                                <input type="number" name="dimension_L[]" class="form-control form-control-sm" placeholder="L (mm)" step="0.1">
+                            </div>
+                            <div class="col-4">
+                                <input type="number" name="dimension_W[]" class="form-control form-control-sm" placeholder="W (mm)" step="0.1">
+                            </div>
+                            <div class="col-4">
+                                <input type="number" name="dimension_T[]" class="form-control form-control-sm" placeholder="T (mm)" step="0.1">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
                 <div class="col-12">
-                     <input type="file" name="drawing_file_existing[]" class="form-control form-control-sm mt-1" accept=".pdf,.jpg,.jpeg,.png,.gif,.doc,.docx">
-                     <input type="text" name="product_dimensions[]" class="form-control form-control-sm mt-1" placeholder="Dimensions" readonly>
-                     <textarea name="product_description[]" class="form-control form-control-sm mt-1" placeholder="Notes" rows="1"></textarea>
+                    <input type="file" name="drawing_file_existing[]" class="form-control form-control-sm mt-1" accept=".pdf,.jpg,.jpeg,.png,.gif,.doc,.docx">
+                    <input type="hidden" name="product_dimensions[]" class="dimensions-hidden">
+                    <textarea name="product_description[]" class="form-control form-control-sm mt-1" placeholder="Notes" rows="1"></textarea>
                 </div>
             </div>
         </div>
@@ -1207,8 +1303,37 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
                     <label class="small">Drawing</label>
                     <input type="file" name="drawing_file_manual[]" class="form-control form-control-sm" accept=".pdf,.jpg,.jpeg,.png,.gif,.doc,.docx">
                 </div>
+                
+                <!-- Dimension Type and Inputs for manual products -->
+                <div class="col-md-4">
+                    <label class="small">Dimension Type</label>
+                    <select name="manual_dimension_type[]" class="form-select form-select-sm" onchange="updateDimensionInputs(this)">
+                        <option value="plate">Plate (L x W x T)</option>
+                        <option value="pipe">Pipe (L x OD x ID x T)</option>
+                        <option value="t-joint">T-Joint (L x W x T x H)</option>
+                        <option value="block">Block (L x W x H)</option>
+                    </select>
+                </div>
+                
+                <div class="col-md-8">
+                    <label class="small">Dimensions</label>
+                    <div class="dimension-inputs">
+                        <div class="row g-1">
+                            <div class="col-4">
+                                <input type="number" name="manual_dimension_L[]" class="form-control form-control-sm" placeholder="L (mm)" step="0.1">
+                            </div>
+                            <div class="col-4">
+                                <input type="number" name="manual_dimension_W[]" class="form-control form-control-sm" placeholder="W (mm)" step="0.1">
+                            </div>
+                            <div class="col-4">
+                                <input type="number" name="manual_dimension_T[]" class="form-control form-control-sm" placeholder="T (mm)" step="0.1">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
                 <div class="col-12">
-                    <input type="text" name="manual_product_dimensions[]" class="form-control form-control-sm mt-1" placeholder="Dimensions">
+                    <input type="hidden" name="manual_product_dimensions[]" class="dimensions-hidden">
                     <textarea name="manual_product_description[]" class="form-control form-control-sm mt-1" placeholder="Description" rows="1"></textarea>
                 </div>
             </div>
@@ -1233,13 +1358,257 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
             calcTotal();
         }
 
-        function updateProductPrice(select) {
-            const price = select.options[select.selectedIndex].dataset.price || 0;
-            const dimensions = select.options[select.selectedIndex].dataset.dimensions || '';
+        function updateProductDetails(select) {
+            const option = select.options[select.selectedIndex];
+            const price = option.dataset.price || 0;
+            const dimensions = option.dataset.dimensions || '';
+            const dimensionType = option.dataset.dimensionType || 'plate';
+            
             const row = select.closest('.row');
             row.querySelector('.price').value = price;
-            row.querySelector('input[name="product_dimensions[]"]').value = dimensions;
+            
+            // Update dimension type
+            const dimensionTypeSelect = row.querySelector('select[name="dimension_type[]"]');
+            dimensionTypeSelect.value = dimensionType;
+            dimensionTypeSelect.setAttribute('data-original-type', dimensionType);
+            
+            // Update dimension inputs based on type
+            updateDimensionInputs(dimensionTypeSelect);
+            
+            // If dimensions exist, parse and fill them
+            if (dimensions) {
+                const dimParts = dimensions.split('x').map(part => part.trim());
+                
+                // Fill dimension inputs based on type
+                switch(dimensionType) {
+                    case 'plate':
+                        if (dimParts.length >= 3) {
+                            row.querySelector('[name="dimension_L[]"]').value = dimParts[0] || '';
+                            row.querySelector('[name="dimension_W[]"]').value = dimParts[1] || '';
+                            row.querySelector('[name="dimension_T[]"]').value = dimParts[2] || '';
+                        }
+                        break;
+                        
+                    case 'pipe':
+                        if (dimParts.length >= 4) {
+                            row.querySelector('[name="dimension_L[]"]').value = dimParts[0] || '';
+                            row.querySelector('[name="dimension_OD[]"]').value = dimParts[1] || '';
+                            row.querySelector('[name="dimension_ID[]"]').value = dimParts[2] || '';
+                            row.querySelector('[name="dimension_T[]"]').value = dimParts[3] || '';
+                        }
+                        break;
+                        
+                    case 't-joint':
+                        if (dimParts.length >= 4) {
+                            row.querySelector('[name="dimension_L[]"]').value = dimParts[0] || '';
+                            row.querySelector('[name="dimension_W[]"]').value = dimParts[1] || '';
+                            row.querySelector('[name="dimension_T[]"]').value = dimParts[2] || '';
+                            row.querySelector('[name="dimension_H[]"]').value = dimParts[3] || '';
+                        }
+                        break;
+                        
+                    case 'block':
+                        if (dimParts.length >= 3) {
+                            row.querySelector('[name="dimension_L[]"]').value = dimParts[0] || '';
+                            row.querySelector('[name="dimension_W[]"]').value = dimParts[1] || '';
+                            row.querySelector('[name="dimension_H[]"]').value = dimParts[2] || '';
+                        }
+                        break;
+                }
+            }
+            
             calcTotal();
+        }
+
+        // Function to update dimension inputs based on type
+        function updateDimensionInputs(select) {
+            const type = select.value;
+            const row = select.closest('.row');
+            const dimensionDiv = row.querySelector('.dimension-inputs');
+            const isManual = select.name.includes('manual');
+            
+            let html = '';
+            
+            switch(type) {
+                case 'plate':
+                    html = `
+                        <div class="row g-1">
+                            <div class="col-4">
+                                <input type="number" name="${isManual ? 'manual_dimension_L[]' : 'dimension_L[]'}" 
+                                       class="form-control form-control-sm" placeholder="L (mm)" step="0.1">
+                            </div>
+                            <div class="col-4">
+                                <input type="number" name="${isManual ? 'manual_dimension_W[]' : 'dimension_W[]'}" 
+                                       class="form-control form-control-sm" placeholder="W (mm)" step="0.1">
+                            </div>
+                            <div class="col-4">
+                                <input type="number" name="${isManual ? 'manual_dimension_T[]' : 'dimension_T[]'}" 
+                                       class="form-control form-control-sm" placeholder="T (mm)" step="0.1">
+                            </div>
+                        </div>
+                    `;
+                    break;
+                    
+                case 'pipe':
+                    html = `
+                        <div class="row g-1">
+                            <div class="col-3">
+                                <input type="number" name="${isManual ? 'manual_dimension_L[]' : 'dimension_L[]'}" 
+                                       class="form-control form-control-sm" placeholder="L (mm)" step="0.1">
+                            </div>
+                            <div class="col-3">
+                                <input type="number" name="${isManual ? 'manual_dimension_OD[]' : 'dimension_OD[]'}" 
+                                       class="form-control form-control-sm" placeholder="OD (mm)" step="0.1">
+                            </div>
+                            <div class="col-3">
+                                <input type="number" name="${isManual ? 'manual_dimension_ID[]' : 'dimension_ID[]'}" 
+                                       class="form-control form-control-sm" placeholder="ID (mm)" step="0.1">
+                            </div>
+                            <div class="col-3">
+                                <input type="number" name="${isManual ? 'manual_dimension_T[]' : 'dimension_T[]'}" 
+                                       class="form-control form-control-sm" placeholder="T (mm)" step="0.1">
+                            </div>
+                        </div>
+                    `;
+                    break;
+                    
+                case 't-joint':
+                    html = `
+                        <div class="row g-1">
+                            <div class="col-3">
+                                <input type="number" name="${isManual ? 'manual_dimension_L[]' : 'dimension_L[]'}" 
+                                       class="form-control form-control-sm" placeholder="L (mm)" step="0.1">
+                            </div>
+                            <div class="col-3">
+                                <input type="number" name="${isManual ? 'manual_dimension_W[]' : 'dimension_W[]'}" 
+                                       class="form-control form-control-sm" placeholder="W (mm)" step="0.1">
+                            </div>
+                            <div class="col-3">
+                                <input type="number" name="${isManual ? 'manual_dimension_T[]' : 'dimension_T[]'}" 
+                                       class="form-control form-control-sm" placeholder="T (mm)" step="0.1">
+                            </div>
+                            <div class="col-3">
+                                <input type="number" name="${isManual ? 'manual_dimension_H[]' : 'dimension_H[]'}" 
+                                       class="form-control form-control-sm" placeholder="H (mm)" step="0.1">
+                            </div>
+                        </div>
+                    `;
+                    break;
+                    
+                case 'block':
+                    html = `
+                        <div class="row g-1">
+                            <div class="col-4">
+                                <input type="number" name="${isManual ? 'manual_dimension_L[]' : 'dimension_L[]'}" 
+                                       class="form-control form-control-sm" placeholder="L (mm)" step="0.1">
+                            </div>
+                            <div class="col-4">
+                                <input type="number" name="${isManual ? 'manual_dimension_W[]' : 'dimension_W[]'}" 
+                                       class="form-control form-control-sm" placeholder="W (mm)" step="0.1">
+                            </div>
+                            <div class="col-4">
+                                <input type="number" name="${isManual ? 'manual_dimension_H[]' : 'dimension_H[]'}" 
+                                       class="form-control form-control-sm" placeholder="H (mm)" step="0.1">
+                            </div>
+                        </div>
+                    `;
+                    break;
+            }
+            
+            dimensionDiv.innerHTML = html;
+        }
+
+        // Function to format dimensions before form submission
+        function formatDimensionsForSubmission() {
+            // Process existing products
+            document.querySelectorAll('.existing-entry').forEach((entry, index) => {
+                const typeSelect = entry.querySelector('select[name="dimension_type[]"]');
+                const type = typeSelect ? typeSelect.value : 'plate';
+                const hiddenInput = entry.querySelector('.dimensions-hidden');
+                
+                let dimensions = '';
+                
+                switch(type) {
+                    case 'plate':
+                        const L = entry.querySelector('[name="dimension_L[]"]')?.value || '';
+                        const W = entry.querySelector('[name="dimension_W[]"]')?.value || '';
+                        const T = entry.querySelector('[name="dimension_T[]"]')?.value || '';
+                        dimensions = `${L} x ${W} x ${T}`;
+                        break;
+                        
+                    case 'pipe':
+                        const L_p = entry.querySelector('[name="dimension_L[]"]')?.value || '';
+                        const OD = entry.querySelector('[name="dimension_OD[]"]')?.value || '';
+                        const ID = entry.querySelector('[name="dimension_ID[]"]')?.value || '';
+                        const T_p = entry.querySelector('[name="dimension_T[]"]')?.value || '';
+                        dimensions = `${L_p} x ${OD} x ${ID} x ${T_p}`;
+                        break;
+                        
+                    case 't-joint':
+                        const L_t = entry.querySelector('[name="dimension_L[]"]')?.value || '';
+                        const W_t = entry.querySelector('[name="dimension_W[]"]')?.value || '';
+                        const T_t = entry.querySelector('[name="dimension_T[]"]')?.value || '';
+                        const H_t = entry.querySelector('[name="dimension_H[]"]')?.value || '';
+                        dimensions = `${L_t} x ${W_t} x ${T_t} x ${H_t}`;
+                        break;
+                        
+                    case 'block':
+                        const L_b = entry.querySelector('[name="dimension_L[]"]')?.value || '';
+                        const W_b = entry.querySelector('[name="dimension_W[]"]')?.value || '';
+                        const H_b = entry.querySelector('[name="dimension_H[]"]')?.value || '';
+                        dimensions = `${L_b} x ${W_b} x ${H_b}`;
+                        break;
+                }
+                
+                if (hiddenInput) {
+                    hiddenInput.value = dimensions.trim();
+                }
+            });
+            
+            // Process manual products
+            document.querySelectorAll('.manual-entry').forEach((entry, index) => {
+                const typeSelect = entry.querySelector('select[name="manual_dimension_type[]"]');
+                const type = typeSelect ? typeSelect.value : 'plate';
+                const hiddenInput = entry.querySelector('.dimensions-hidden');
+                
+                let dimensions = '';
+                
+                switch(type) {
+                    case 'plate':
+                        const L = entry.querySelector('[name="manual_dimension_L[]"]')?.value || '';
+                        const W = entry.querySelector('[name="manual_dimension_W[]"]')?.value || '';
+                        const T = entry.querySelector('[name="manual_dimension_T[]"]')?.value || '';
+                        dimensions = `${L} x ${W} x ${T}`;
+                        break;
+                        
+                    case 'pipe':
+                        const L_p = entry.querySelector('[name="manual_dimension_L[]"]')?.value || '';
+                        const OD = entry.querySelector('[name="manual_dimension_OD[]"]')?.value || '';
+                        const ID = entry.querySelector('[name="manual_dimension_ID[]"]')?.value || '';
+                        const T_p = entry.querySelector('[name="manual_dimension_T[]"]')?.value || '';
+                        dimensions = `${L_p} x ${OD} x ${ID} x ${T_p}`;
+                        break;
+                        
+                    case 't-joint':
+                        const L_t = entry.querySelector('[name="manual_dimension_L[]"]')?.value || '';
+                        const W_t = entry.querySelector('[name="manual_dimension_W[]"]')?.value || '';
+                        const T_t = entry.querySelector('[name="manual_dimension_T[]"]')?.value || '';
+                        const H_t = entry.querySelector('[name="manual_dimension_H[]"]')?.value || '';
+                        dimensions = `${L_t} x ${W_t} x ${T_t} x ${H_t}`;
+                        break;
+                        
+                    case 'block':
+                        const L_b = entry.querySelector('[name="manual_dimension_L[]"]')?.value || '';
+                        const W_b = entry.querySelector('[name="manual_dimension_W[]"]')?.value || '';
+                        const H_b = entry.querySelector('[name="manual_dimension_H[]"]')?.value || '';
+                        dimensions = `${L_b} x ${W_b} x ${H_b}`;
+                        break;
+                }
+                
+                if (hiddenInput) {
+                    hiddenInput.value = dimensions.trim();
+                }
+            });
         }
 
         function calcTotal() {
@@ -1286,6 +1655,9 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
 
         // Form Validation
         document.getElementById('orderForm')?.addEventListener('submit', function(e) {
+            // Format dimensions before submission
+            formatDimensionsForSubmission();
+            
             const customerSelect = this.querySelector('select[name="customer_id"]');
             const poDateInput = this.querySelector('input[name="po_date"]');
             const productEntries = this.querySelectorAll('.product-entry');
@@ -1342,6 +1714,11 @@ $successOrderId = isset($_GET['success']) ? sanitize_input($_GET['success']) : n
         // Initialize calculations on page load
         document.addEventListener('DOMContentLoaded', function() {
             calcTotal();
+            
+            // Initialize dimension inputs for any existing items
+            document.querySelectorAll('select[name="dimension_type[]"], select[name="manual_dimension_type[]"]').forEach(select => {
+                updateDimensionInputs(select);
+            });
             
             // Auto-hide success message after 5 seconds
             const successAlert = document.querySelector('.alert-success');

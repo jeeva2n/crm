@@ -221,10 +221,38 @@ function showSourcingStage($order, $item, $itemIndex, $csrfToken)
                             <label class="form-label">Grade/Quality *</label>
                             <input type="text" name="raw_material_grade" class="form-control" required placeholder="e.g., 304 Stainless">
                         </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Dimensions</label>
-                            <input type="text" name="raw_material_dimensions" class="form-control" placeholder="e.g., 100x50x20mm">
-                        </div>
+                    <div class="col-md-6">
+    <label class="form-label">Dimension Type *</label>
+    <select name="dimension_type" class="form-select" required 
+            onchange="updateDimensionInputs(this.value)">
+        <option value="plate">Plate (L x W x T)</option>
+        <option value="pipe">Pipe (L x OD x ID x T)</option>
+        <option value="t-joint">T-Joint (L x W x T x H)</option>
+        <option value="block">Block (L x W x H)</option>
+    </select>
+</div>
+
+<div class="col-md-6">
+    <label class="form-label">Dimensions *</label>
+    <div id="dimension-inputs">
+        <!-- Plate dimensions by default -->
+        <div class="row g-2">
+            <div class="col">
+                <input type="number" name="dimension_L" class="form-control" 
+                       placeholder="Length (mm)" step="0.1" required>
+            </div>
+            <div class="col">
+                <input type="number" name="dimension_W" class="form-control" 
+                       placeholder="Width (mm)" step="0.1" required>
+            </div>
+            <div class="col">
+                <input type="number" name="dimension_T" class="form-control" 
+                       placeholder="Thickness (mm)" step="0.1" required>
+            </div>
+        </div>
+    </div>
+</div>
+
                         <div class="col-md-6">
                             <label class="form-label">Vendor Name</label>
                             <input type="text" name="vendor_name" class="form-control" placeholder="Supplier name">
@@ -2468,16 +2496,65 @@ $csrfToken = generateCsrfToken();
 
                                             <!-- Item Body -->
                                             <div class="item-body">
-                                                <?php if (!empty($item['Dimensions']) || !empty($item['Description'])): ?>
-                                                    <div class="mb-3 p-2 bg-light rounded">
-                                                        <?php if (!empty($item['Dimensions'])): ?>
-                                                            <div><strong>Dimensions:</strong> <?= htmlspecialchars($item['Dimensions']) ?></div>
-                                                        <?php endif; ?>
-                                                        <?php if (!empty($item['Description'])): ?>
-                                                            <div><strong>Description:</strong> <?= htmlspecialchars($item['Description']) ?></div>
-                                                        <?php endif; ?>
-                                                    </div>
-                                                <?php endif; ?>
+                                            <?php if (!empty($item['Dimensions']) || !empty($item['Description'])): ?>
+    <div class="mb-3 p-2 bg-light rounded">
+        <?php if (!empty($item['Dimensions'])): ?>
+            <?php
+            // Parse dimensions based on type
+            $dimensions = $item['Dimensions'];
+            $dimensionType = $item['Dimension_Type'] ?? 'plate'; // Default to plate
+            
+            // Create structured display based on type
+            $dimensionDisplay = '';
+            switch(strtolower($dimensionType)) {
+                case 'pipe':
+                    // Format: L x OD x ID x T
+                    $parts = explode('x', $dimensions);
+                    if (count($parts) >= 4) {
+                        $dimensionDisplay = "<div><strong>Dimensions (Pipe):</strong> L = " . trim($parts[0]) . 
+                                           " mm, OD = " . trim($parts[1]) . " mm, ID = " . trim($parts[2]) . 
+                                           " mm, T = " . trim($parts[3]) . " mm</div>";
+                    }
+                    break;
+                    
+                case 't-joint':
+                    // Format: L x W x T x H
+                    $parts = explode('x', $dimensions);
+                    if (count($parts) >= 4) {
+                        $dimensionDisplay = "<div><strong>Dimensions (T-Joint):</strong> L = " . trim($parts[0]) . 
+                                           " mm, W = " . trim($parts[1]) . " mm, T = " . trim($parts[2]) . 
+                                           " mm, H = " . trim($parts[3]) . " mm</div>";
+                    }
+                    break;
+                    
+                case 'block':
+                    // Format: L x W x H (manual type)
+                    $parts = explode('x', $dimensions);
+                    if (count($parts) >= 3) {
+                        $dimensionDisplay = "<div><strong>Dimensions (Block):</strong> L = " . trim($parts[0]) . 
+                                           " mm, W = " . trim($parts[1]) . " mm, H = " . trim($parts[2]) . " mm</div>";
+                    }
+                    break;
+                    
+                case 'plate':
+                default:
+                    // Format: L x W x T (default)
+                    $parts = explode('x', $dimensions);
+                    if (count($parts) >= 3) {
+                        $dimensionDisplay = "<div><strong>Dimensions (Plate):</strong> L = " . trim($parts[0]) . 
+                                           " mm, W = " . trim($parts[1]) . " mm, T = " . trim($parts[2]) . " mm</div>";
+                    }
+                    break;
+            }
+            
+            echo $dimensionDisplay ?: "<div><strong>Dimensions:</strong> " . htmlspecialchars($dimensions) . "</div>";
+            ?>
+        <?php endif; ?>
+        <?php if (!empty($item['Description'])): ?>
+            <div><strong>Description:</strong> <?= htmlspecialchars($item['Description']) ?></div>
+        <?php endif; ?>
+    </div>
+<?php endif; ?>
 
                                                 <!-- Item Drawing Section -->
                                                 <div class="mb-3">
@@ -2940,6 +3017,163 @@ $csrfToken = generateCsrfToken();
                 });
             }
         });
+        function updateDimensionInputs(type) {
+    const dimensionDiv = document.getElementById('dimension-inputs');
+    let html = '';
+    
+    switch(type) {
+        case 'plate':
+            html = `
+                <div class="row g-2">
+                    <div class="col">
+                        <input type="number" name="dimension_L" class="form-control" 
+                               placeholder="Length (mm)" step="0.1" required>
+                    </div>
+                    <div class="col">
+                        <input type="number" name="dimension_W" class="form-control" 
+                               placeholder="Width (mm)" step="0.1" required>
+                    </div>
+                    <div class="col">
+                        <input type="number" name="dimension_T" class="form-control" 
+                               placeholder="Thickness (mm)" step="0.1" required>
+                    </div>
+                </div>
+            `;
+            break;
+            
+        case 'pipe':
+            html = `
+                <div class="row g-2">
+                    <div class="col">
+                        <input type="number" name="dimension_L" class="form-control" 
+                               placeholder="Length (mm)" step="0.1" required>
+                    </div>
+                    <div class="col">
+                        <input type="number" name="dimension_OD" class="form-control" 
+                               placeholder="Outer Diameter (mm)" step="0.1" required>
+                    </div>
+                    <div class="col">
+                        <input type="number" name="dimension_ID" class="form-control" 
+                               placeholder="Inner Diameter (mm)" step="0.1" required>
+                    </div>
+                    <div class="col">
+                        <input type="number" name="dimension_T" class="form-control" 
+                               placeholder="Thickness (mm)" step="0.1" required>
+                    </div>
+                </div>
+            `;
+            break;
+            
+        case 't-joint':
+            html = `
+                <div class="row g-2">
+                    <div class="col">
+                        <input type="number" name="dimension_L" class="form-control" 
+                               placeholder="Length (mm)" step="0.1" required>
+                    </div>
+                    <div class="col">
+                        <input type="number" name="dimension_W" class="form-control" 
+                               placeholder="Width (mm)" step="0.1" required>
+                    </div>
+                    <div class="col">
+                        <input type="number" name="dimension_T" class="form-control" 
+                               placeholder="Thickness (mm)" step="0.1" required>
+                    </div>
+                    <div class="col">
+                        <input type="number" name="dimension_H" class="form-control" 
+                               placeholder="Height (mm)" step="0.1" required>
+                    </div>
+                </div>
+            `;
+            break;
+            
+        case 'block':
+            html = `
+                <div class="row g-2">
+                    <div class="col">
+                        <input type="number" name="dimension_L" class="form-control" 
+                               placeholder="Length (mm)" step="0.1" required>
+                    </div>
+                    <div class="col">
+                        <input type="number" name="dimension_W" class="form-control" 
+                               placeholder="Width (mm)" step="0.1" required>
+                    </div>
+                    <div class="col">
+                        <input type="number" name="dimension_H" class="form-control" 
+                               placeholder="Height (mm)" step="0.1" required>
+                    </div>
+                </div>
+            `;
+            break;
+    }
+    
+    dimensionDiv.innerHTML = html;
+}
+
+// Initialize dimension inputs on page load
+document.addEventListener('DOMContentLoaded', function() {
+    const defaultType = document.querySelector('[name="dimension_type"]')?.value || 'plate';
+    updateDimensionInputs(defaultType);
+});
+
+// Function to format dimensions for database storage
+function formatDimensionsForStorage(type) {
+    let dimensions = '';
+    
+    switch(type) {
+        case 'plate':
+            const L = document.querySelector('[name="dimension_L"]')?.value || '';
+            const W = document.querySelector('[name="dimension_W"]')?.value || '';
+            const T = document.querySelector('[name="dimension_T"]')?.value || '';
+            dimensions = `${L} x ${W} x ${T}`;
+            break;
+            
+        case 'pipe':
+            const L_p = document.querySelector('[name="dimension_L"]')?.value || '';
+            const OD = document.querySelector('[name="dimension_OD"]')?.value || '';
+            const ID = document.querySelector('[name="dimension_ID"]')?.value || '';
+            const T_p = document.querySelector('[name="dimension_T"]')?.value || '';
+            dimensions = `${L_p} x ${OD} x ${ID} x ${T_p}`;
+            break;
+            
+        case 't-joint':
+            const L_t = document.querySelector('[name="dimension_L"]')?.value || '';
+            const W_t = document.querySelector('[name="dimension_W"]')?.value || '';
+            const T_t = document.querySelector('[name="dimension_T"]')?.value || '';
+            const H_t = document.querySelector('[name="dimension_H"]')?.value || '';
+            dimensions = `${L_t} x ${W_t} x ${T_t} x ${H_t}`;
+            break;
+            
+        case 'block':
+            const L_b = document.querySelector('[name="dimension_L"]')?.value || '';
+            const W_b = document.querySelector('[name="dimension_W"]')?.value || '';
+            const H_b = document.querySelector('[name="dimension_H"]')?.value || '';
+            dimensions = `${L_b} x ${W_b} x ${H_b}`;
+            break;
+    }
+    
+    return dimensions;
+}
+
+// Add this to your form submission handler
+document.querySelectorAll('form').forEach(form => {
+    form.addEventListener('submit', function(e) {
+        if (this.querySelector('[name="dimension_type"]')) {
+            const type = this.querySelector('[name="dimension_type"]').value;
+            const dimensions = formatDimensionsForStorage(type);
+            
+            // Create a hidden input to store the formatted dimensions
+            let hiddenInput = this.querySelector('[name="dimensions"]');
+            if (!hiddenInput) {
+                hiddenInput = document.createElement('input');
+                hiddenInput.type = 'hidden';
+                hiddenInput.name = 'dimensions';
+                this.appendChild(hiddenInput);
+            }
+            hiddenInput.value = dimensions;
+        }
+    });
+});
     </script>
 </body>
 
