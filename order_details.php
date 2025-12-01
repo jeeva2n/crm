@@ -122,8 +122,8 @@ $csrfToken = generateCsrfToken();
                                     <td><?= htmlspecialchars($item['name']) ?></td>
                                     <td><?= htmlspecialchars($item['dimensions']) ?></td>
                                     <td><?= $item['quantity'] ?></td>
-                                    <td>$<?= number_format($item['unit_price'], 2) ?></td>
-                                    <td>$<?= number_format($item['total_price'], 2) ?></td>
+                                    <td>₹<?= number_format($item['unit_price'], 2) ?></td>
+                                    <td>₹<?= number_format($item['total_price'], 2) ?></td>
                                     <td>
                                         <span class="badge bg-secondary"><?= htmlspecialchars($item['item_status']) ?></span>
                                     </td>
@@ -133,7 +133,7 @@ $csrfToken = generateCsrfToken();
                         <tfoot>
                             <tr>
                                 <td colspan="5" class="text-end"><strong>Total:</strong></td>
-                                <td><strong>$<?= number_format($order['total_amount'], 2) ?></strong></td>
+                                <td><strong>₹<?= number_format($order['total_amount'], 2) ?></strong></td>
                                 <td></td>
                             </tr>
                         </tfoot>

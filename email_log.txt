@@ -45,3 +45,13 @@ Serial: 7
 Name: clay
 Price: $220
 Stock: 20
+[2025-12-01 11:48:37] TO: mtq@gmail.com | SUBJECT: Welcome to Alphasonix! | MESSAGE: Dear MTQ,
+
+Thank you for choosing Alphasonix. We're excited to have you as our customer.
+
+If you hav
+[2025-12-01 11:51:21] TO: inventory@alphasonix.com | SUBJECT: New Product Added | MESSAGE: New product added:
+Serial: 77
+Name: UT flawed speciemens  pipe
+Price: $2000
+Stock: 20
