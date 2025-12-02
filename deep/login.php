@@ -266,7 +266,7 @@ if(isset($_POST['login'])) {
         </div>
 
         <div class="admin-link">
-            <p>Are you an admin? <a href="admin/">Login here</a></p>
+            <p>Are you an admin? <a href="admin/index.php">Login here</a></p>
         </div>
     </div>
 

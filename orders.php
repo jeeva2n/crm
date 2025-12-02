@@ -236,7 +236,7 @@ function getOrderStatistics() {
             'shipped_orders' => 0,
             'today_orders' => 0,
             'weekly_orders' => 0
-        ];
+        ];  
     }
 }
 

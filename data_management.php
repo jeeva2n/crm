@@ -9,26 +9,96 @@ requireAdmin('home.php');
 $action = $_GET['action'] ?? '';
 $filename = $_GET['file'] ?? '';
 
+// Fetch all data
+function viewAllData()
+{
+    $path = __DIR__ . "/data/";
+    return array_diff(scandir($path), ['.', '..']);
+}
+
+// View a single data file
+function viewDataFile($fileName)
+{
+    $filePath = __DIR__ . "/data/" . $fileName;
+    return file_exists($filePath) ? file_get_contents($filePath) : "File not found";
+}
+
+// Download CSV file
+function downloadCsvFile($fileName)
+{
+    $filePath = __DIR__ . "/data/" . $fileName;
+
+    if (!file_exists($filePath)) {
+        return false;
+    }
+
+    header("Content-Type: text/csv");
+    header("Content-Disposition: attachment; filename=$fileName");
+    readfile($filePath);
+    exit;
+}
+
+// Download all files as ZIP
+function downloadAllDataAsZip()
+{
+    $zipName = "backup_" . date("Ymd_His") . ".zip";
+    $zipPath = __DIR__ . "/backups/" . $zipName;
+
+    $zip = new ZipArchive();
+    $zip->open($zipPath, ZipArchive::CREATE);
+
+    foreach (glob(__DIR__ . "/data/*") as $file) {
+        $zip->addFile($file, basename($file));
+    }
+
+    $zip->close();
+    return $zipName;
+}
+
+// Create backup
+function createBackup()
+{
+    return downloadAllDataAsZip();
+}
+
+// List available data files
+function getDataFilesList()
+{
+    return array_diff(scandir(__DIR__ . "/data/"), ['.', '..']);
+}
+
+// System statistics (example)
+function getSystemStats()
+{
+    return [
+        "php_version" => phpversion(),
+        "memory_limit" => ini_get("memory_limit"),
+        "upload_max" => ini_get("upload_max_filesize")
+    ];
+}
+
+
+
 try {
     switch ($action) {
         case 'view':
             if ($filename === 'all') {
                 viewAllData();
             } elseif ($filename) {
-                viewCsvFile($filename);
+                viewDataFile($filename);
             }
             break;
-            
+
         case 'download':
             if ($filename) {
                 downloadCsvFile($filename);
             }
             break;
-            
+
         case 'download_zip':
             downloadAllDataAsZip();
             break;
-            
+
         case 'backup':
             $backupPath = createBackup();
             $_SESSION['message'] = ['type' => 'success', 'text' => 'Backup created successfully: ' . basename($backupPath)];
@@ -50,6 +120,7 @@ $stats = getSystemStats();
 ?>
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -76,7 +147,7 @@ $stats = getSystemStats();
             --gray-700: #525f7f;
             --gray-800: #32325d;
             --gray-900: #212529;
-            
+
             --shadow-sm: 0 0 0.5rem rgba(0, 0, 0, .075);
             --shadow: 0 0 2rem 0 rgba(136, 152, 170, .15);
             --shadow-lg: 0 0 3rem rgba(0, 0, 0, .175);
@@ -260,10 +331,21 @@ $stats = getSystemStats();
             display: block;
         }
 
-        .action-card.primary { color: var(--primary); }
-        .action-card.info { color: var(--info); }
-        .action-card.success { color: var(--success); }
-        .action-card.warning { color: var(--warning); }
+        .action-card.primary {
+            color: var(--primary);
+        }
+
+        .action-card.info {
+            color: var(--info);
+        }
+
+        .action-card.success {
+            color: var(--success);
+        }
+
+        .action-card.warning {
+            color: var(--warning);
+        }
 
         .action-card-title {
             font-weight: 600;
@@ -298,10 +380,21 @@ $stats = getSystemStats();
             background: var(--primary);
         }
 
-        .stat-card.success::before { background: var(--success); }
-        .stat-card.info::before { background: var(--info); }
-        .stat-card.warning::before { background: var(--warning); }
-        .stat-card.danger::before { background: var(--danger); }
+        .stat-card.success::before {
+            background: var(--success);
+        }
+
+        .stat-card.info::before {
+            background: var(--info);
+        }
+
+        .stat-card.warning::before {
+            background: var(--warning);
+        }
+
+        .stat-card.danger::before {
+            background: var(--danger);
+        }
 
         .stat-icon {
             position: absolute;
@@ -540,6 +633,7 @@ $stats = getSystemStats();
         }
     </style>
 </head>
+
 <body>
     <!-- Navigation -->
     <nav class="navbar-custom">
@@ -549,7 +643,7 @@ $stats = getSystemStats();
                     <i class="fas fa-industry"></i>
                     Alphasonix CRM
                 </a>
-                
+
                 <div class="d-flex align-items-center gap-4">
                     <div class="navbar-nav d-flex flex-row">
                         <a href="home.php" class="nav-link-custom">
@@ -691,7 +785,7 @@ $stats = getSystemStats();
                             <?= $file['exists'] ? 'Available' : 'Missing' ?>
                         </div>
                     </div>
-                    
+
                     <div class="file-details">
                         <div class="detail-item">
                             <div class="detail-icon"><i class="fas fa-hdd"></i></div>
@@ -711,7 +805,7 @@ $stats = getSystemStats();
                             </div>
                         </div>
                     </div>
-                    
+
                     <div class="file-actions">
                         <?php if ($file['exists']): ?>
                             <a href="?action=view&file=<?= urlencode($file['filename']) ?>" class="btn-action btn-view">
@@ -736,4 +830,5 @@ $stats = getSystemStats();
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.0-beta1/dist/js/bootstrap.bundle.min.js"></script>
 </body>
+
 </html>
