@@ -111,6 +111,7 @@ function addItem() {
         </div>
         
         <button type="button" class="remove-item" onclick="removeItem(this)">Remove</button>
+        
     `;
     container.appendChild(newItem);
 }
